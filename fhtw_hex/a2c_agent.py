@@ -38,10 +38,29 @@ def select_action(policy, valid_actions, board_size):
     valid_action_indices = [a[0] * board_size + a[1] for a in valid_actions]
     policy_mask = torch.zeros_like(policy)
     policy_mask[:, valid_action_indices] = 1
+    
     masked_policy = policy * policy_mask
-    masked_policy /= masked_policy.sum(dim=-1, keepdim=True) # Re-normalize
+    
+    # Check if all valid actions have a summed probability of 0.
+    # This can happen if the policy network assigns 0 probability to all valid moves.
+    if masked_policy.sum().item() < 1e-9:
+        # Fallback to a uniform distribution over valid actions to prevent NaNs.
+        num_valid_actions = len(valid_action_indices)
+        if num_valid_actions == 0:
+             # This case should ideally not be reached in a game like Hex before a winner is declared.
+             # However, as a safeguard, we can return a random valid action if it ever occurs.
+             # But here we'll just create a uniform policy over the mask which is all zeros.
+             # A better solution might be to raise an error or handle it gracefully based on game logic.
+             # For now, we will create a uniform distribution to avoid crashing.
+             masked_policy[:, valid_action_indices] = 1.0
+        
+        masked_policy[:, valid_action_indices] = 1.0 / num_valid_actions
 
-    dist = Categorical(masked_policy)
+    # Re-normalize the policy over valid actions.
+    # Add a small epsilon for numerical stability before creating the distribution.
+    masked_policy /= (masked_policy.sum(dim=-1, keepdim=True) + 1e-9)
+
+    dist = Categorical(probs=masked_policy)
     action_index = dist.sample()
     
     log_prob = dist.log_prob(action_index)
