@@ -43,15 +43,21 @@ def main():
         args.model_path = f"{args.agent_type}_hex_agent.pth"
 
     print(f"--- Hex AI Engine --- ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
-    print(f"Agent Type: {args.agent_type.upper()} | Network: {args.network.upper()} | Mode: {args.mode.capitalize()}")
+    if args.mode == 'tournament':
+        print(f"Mode: {args.mode.capitalize()}")
+    else:
+        print(f"Agent Type: {args.agent_type.upper()} | Network: {args.network.upper()} | Mode: {args.mode.capitalize()}")
     
     if args.mode == 'tournament':
+        print("Dispatching to tournament handler...")
         from tournament import run_tournament
         run_tournament(args)
     elif args.agent_type == 'a2c':
+        print(f"Dispatching to A2C agent handler (mode: {args.mode})...")
         from a2c_agent import run_a2c
         run_a2c(args)
     elif args.agent_type == 'mcts':
+        print(f"Dispatching to MCTS agent handler (mode: {args.mode})...")
         from mcts_agent import run_mcts
         run_mcts(args)
 

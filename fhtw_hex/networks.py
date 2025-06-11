@@ -3,24 +3,39 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ActorCritic(nn.Module):
-    """A simple CNN for Actor-Critic."""
-    def __init__(self, board_size, action_space_size):
+    """An actor-critic network for the Hex game."""
+    def __init__(self, board_size, action_size):
         super(ActorCritic, self).__init__()
-        self.conv1 = nn.Conv2d(1, 32, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
-        flattened_size = 64 * board_size * board_size
         
-        self.actor_fc = nn.Linear(flattened_size, action_space_size)
-        self.critic_fc = nn.Linear(flattened_size, 1)
+        # Convolutional layers
+        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        
+        # Calculate the size of the flattened layer
+        self._to_linear = None
+        self._get_conv_output_size(board_size)
+        
+        # Actor and Critic heads
+        self.actor_fc = nn.Linear(self._to_linear, action_size)
+        self.critic_fc = nn.Linear(self._to_linear, 1)
 
-    def forward(self, state):
-        x = F.relu(self.conv1(state))
+    def _get_conv_output_size(self, board_size):
+        """Helper to calculate the flattened size after conv layers."""
+        x = torch.randn(1, 1, board_size, board_size)
+        x = F.relu(self.conv1(x))
         x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1)
+        if self._to_linear is None:
+            self._to_linear = x.view(x.size(0), -1).shape[1]
+
+    def forward(self, x):
+        """Forward pass through the network."""
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = x.view(x.size(0), -1)  # Flatten the tensor
         
+        # Get policy and value
         policy = F.softmax(self.actor_fc(x), dim=-1)
-        value = torch.tanh(self.critic_fc(x)) # Value is between -1 and 1
-        
+        value = self.critic_fc(x)
         return policy, value
 
 class ResidualBlock(nn.Module):

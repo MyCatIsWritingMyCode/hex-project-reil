@@ -29,7 +29,23 @@ def load_player_func(args, player_num, device):
     except FileNotFoundError:
         print(f"FATAL: Model file not found at {model_path}. Cannot run tournament.")
         exit()
-    
+    except RuntimeError:
+        print(f"WARNING: Mismatch loading {model_path} into {network_type.upper()} network. Attempting to load into other network type.")
+        other_network_type = 'resnet' if network_type == 'cnn' else 'cnn'
+        
+        if other_network_type == 'cnn':
+            agent = ActorCritic(args.board_size, args.board_size**2).to(device)
+        else: # resnet
+            agent = ResNet(args.board_size, args.board_size**2).to(device)
+            
+        try:
+            agent.load_state_dict(torch.load(model_path, map_location=device))
+            agent.eval()
+            print(f"SUCCESS: Loaded {model_path} into fallback {other_network_type.upper()} network.")
+        except Exception as e:
+            print(f"FATAL: Failed to load model {model_path} into either network architecture. Error: {e}")
+            exit()
+
     # Return a callable function that represents the player
     if agent_type == 'a2c':
         def a2c_player_func(board, _action_set):
@@ -55,26 +71,22 @@ def run_tournament(args):
     """The main entry point for running a tournament between two agents."""
     
     # Set device
-    device = None
-    if args.environment == 'apple':
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-    elif args.environment in ['windows', 'kaggle']:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-    
-    if device is None:
+    if args.environment == 'gpu' and torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif args.environment == 'gpu' and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    else:
         device = torch.device("cpu")
 
-    print(f"Using device: {device}")
+    print(f"Board Size: {args.board_size}x{args.board_size}")
+    print(f"Device: {device}")
+    print("---------------------")
     
     # Load player functions
     player1_func = load_player_func(args, 1, device)
     player2_func = load_player_func(args, 2, device)
+
+    print("\nAll players loaded successfully. Let the tournament begin!")
 
     env = hexPosition(args.board_size)
     
