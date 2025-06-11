@@ -324,6 +324,31 @@ class hexPosition (object):
             if self.winner == -1:
                 self.print()
                 self._evaluate_black(verbose=True)
+    def machine_vs_machine_silent(self, machine1=None, machine2=None):
+        """
+        A silent version of machine_vs_machine for fast testing.
+        Does not print board states during the game.
+        """
+        #default to random player if 'machine' not given
+        if machine1 == None:
+            def machine1 (board, action_list):
+                from random import choice
+                return choice(action_list)
+        if machine2 == None:
+            def machine2 (board, action_list):
+                from random import choice
+                return choice(action_list)
+        #the match
+        self.reset()
+        while self.winner == 0:
+            possible_actions = self.get_action_space()
+            if self.player == 1:
+                chosen = machine1(self.board, possible_actions)
+                self.move(chosen)
+            else:
+                chosen = machine2(self.board, possible_actions)
+                self.move(chosen)
+        return self.winner
     def replay_history (self):
         """
         Print the game history to standard output.
