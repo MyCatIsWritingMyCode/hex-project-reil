@@ -34,8 +34,8 @@ class MCTS:
 
         for _ in range(num_simulations):
             node = root
-            # Use a deepcopy to avoid modifying the original environment during search
-            sim_env = deepcopy(env)
+            # Use the new, fast clone method
+            sim_env = env.clone()
 
             # 1. Selection
             while node.children:

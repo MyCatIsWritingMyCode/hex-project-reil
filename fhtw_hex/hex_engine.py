@@ -366,3 +366,15 @@ class hexPosition (object):
         file = open(path, 'ab')
         pickle.dump(self, file)                     
         file.close()
+    def clone(self):
+        """
+        Creates a deep copy of the game state, but much faster than
+        the generic deepcopy, as we only copy what's necessary.
+        """
+        new_pos = hexPosition(self.size)
+        new_pos.board = [row[:] for row in self.board]
+        new_pos.player = self.player
+        new_pos.winner = self.winner
+        # We don't need to copy the history for MCTS simulations
+        new_pos.history = []
+        return new_pos
