@@ -5,12 +5,20 @@ def main():
     parser = argparse.ArgumentParser(description='Hex AI Engine', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
     # Core arguments
-    parser.add_argument('--agent-type', type=str, default='a2c', choices=['a2c', 'mcts'], help='The type of agent to use.')
+    parser.add_argument('--agent-type', type=str, default='a2c', choices=['a2c', 'mcts'], help='The type of agent to use (for train/play/test modes).')
     parser.add_argument('--network', type=str, default='cnn', choices=['cnn', 'resnet'], help='The network architecture to use.')
-    parser.add_argument('--mode', type=str, default='train', choices=['train', 'play', 'test'], help='The mode to run the agent in.')
+    parser.add_argument('--mode', type=str, default='train', choices=['train', 'play', 'test', 'tournament'], help='The mode to run the agent in.')
     parser.add_argument('--board-size', type=int, default=7, help='Size of the Hex board.')
-    parser.add_argument('--model-path', type=str, help='Path to load/save the model. Defaults to <agent-type>_hex_agent.pth')
+    parser.add_argument('--model-path', type=str, help='Path for the primary model.')
     
+    # Tournament specific arguments
+    parser.add_argument('--p1-agent-type', type=str, default='a2c', choices=['a2c', 'mcts'], help='Agent type for Player 1 in tournament.')
+    parser.add_argument('--p1-network-type', type=str, default='cnn', choices=['cnn', 'resnet'], help='Network for Player 1.')
+    parser.add_argument('--p1-model-path', type=str, default='a2c_hex_agent.pth', help='Model path for Player 1.')
+    parser.add_argument('--p2-agent-type', type=str, default='mcts', choices=['a2c', 'mcts'], help='Agent type for Player 2 in tournament.')
+    parser.add_argument('--p2-network-type', type=str, default='resnet', choices=['cnn', 'resnet'], help='Network for Player 2.')
+    parser.add_argument('--p2-model-path', type=str, default='mcts_hex_agent.pth', help='Model path for Player 2.')
+
     # Training arguments
     parser.add_argument('--n-episodes', type=int, default=1000, help='Number of episodes for training.')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate.')
@@ -43,6 +51,9 @@ def main():
     elif args.agent_type == 'mcts':
         from mcts_agent import run_mcts
         run_mcts(args)
+    elif args.mode == 'tournament':
+        from tournament import run_tournament
+        run_tournament(args)
 
     print("----------------------------------------------------")
 
