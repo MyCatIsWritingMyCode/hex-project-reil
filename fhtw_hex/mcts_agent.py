@@ -243,39 +243,66 @@ def run_mcts(args):
     elif args.mode == 'train':
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
         all_train_examples = []
+        loss_history = []  # To store loss values for plotting
 
         print("\n--- Starting Self-Play ---")
         for i in trange(args.n_episodes, desc="Self-Play"):
             all_train_examples.extend(execute_episode(agent, mcts, args))
 
-        print("\n--- Training Network ---")
+        print("\n--- Starting Training ---")
+        agent.train()
         for epoch in trange(args.mcts_epochs, desc="Epochs"):
-            agent.train()
-            
             np.random.shuffle(all_train_examples)
             
+            # Mini-batch training
             for i in range(0, len(all_train_examples), args.mcts_batch_size):
-                batch = all_train_examples[i:i+len(all_train_examples):args.mcts_batch_size]
-                boards, pis, vs = list(zip(*batch))
+                sample_indices = np.random.randint(len(all_train_examples), size=args.mcts_batch_size)
+                batch = [all_train_examples[j] for j in sample_indices]
                 
-                boards = torch.FloatTensor(np.array(boards)).to(device).unsqueeze(1)
+                boards, pis, vs = zip(*batch)
+                
+                boards = torch.FloatTensor(np.array(boards)).to(device)
                 target_pis = torch.FloatTensor(np.array(pis)).to(device)
                 target_vs = torch.FloatTensor(np.array(vs)).to(device)
 
                 out_pi, out_v = agent(boards)
                 
-                l_pi = -torch.sum(target_pis * F.log_softmax(out_pi, dim=1), dim=1).mean()
-                l_v = F.mse_loss(out_v.view(-1), target_vs)
+                loss_pi = -torch.sum(target_pis * F.log_softmax(out_pi, dim=1)) / target_pis.size()[0]
+                loss_v = F.mse_loss(out_v.view(-1), target_vs)
                 
-                total_loss = l_pi + l_v
-                
+                total_loss = loss_pi + loss_v
+                loss_history.append(total_loss.item())
+
                 optimizer.zero_grad()
                 total_loss.backward()
                 optimizer.step()
 
-        print("\nMCTS agent training complete.")
-        torch.save(agent.state_dict(), args.model_path)
-        print(f"Model saved to {args.model_path}")
+        # Save the trained model
+        if args.model_path:
+            save_path = args.model_path
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            save_path = f"mcts_agent_{args.network}_{args.board_size}x{args.board_size}_{timestamp}.pth"
+        torch.save(agent.state_dict(), save_path)
+        print(f"\nModel saved to {save_path}")
+
+        # Plot and save the training progress
+        plt.figure(figsize=(10, 5))
+        plt.plot(loss_history)
+        plt.title(f"MCTS Training Loss ({args.network.upper()}, {args.board_size}x{args.board_size})")
+        plt.xlabel("Training Step")
+        plt.ylabel("Total Loss")
+        plt.grid(True)
+        plt.savefig("mcts_training_progress.png")
+        print("Training progress plot saved to mcts_training_progress.png")
+
+def get_agent_move(agent, board, player, device, board_size, mcts_simulations):
+    temp_env = hexPosition(board_size)
+    temp_env.board = board
+    temp_env.player = player
+    action_probs = mcts.get_action_probs(temp_env, mcts_simulations, temp=0)
+    best_action = max(action_probs, key=action_probs.get)
+    return best_action
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='MCTS Hex Agent')
