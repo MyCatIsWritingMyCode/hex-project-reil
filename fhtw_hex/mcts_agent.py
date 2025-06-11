@@ -201,7 +201,7 @@ def run_mcts(args):
             agent.eval()
             print(f"\nModel loaded from {args.model_path}")
 
-            def mcts_player_func(board, action_set):
+            def mcts_player_func(board, _action_set):
                 temp_env = hexPosition(args.board_size)
                 temp_env.board = board
                 num_white_stones = sum(row.count(1) for row in board)
