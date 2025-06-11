@@ -1,36 +1,11 @@
 import torch
-import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
 from torch.distributions import Categorical
 import numpy as np
-import argparse
 from hex_engine import hexPosition
 from tqdm import trange
 import matplotlib.pyplot as plt
-from datetime import datetime
-
-class ActorCritic(nn.Module):
-    def __init__(self, board_size, action_space_size):
-        super(ActorCritic, self).__init__()
-        self.conv1 = nn.Conv2d(1, 16, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
-        
-        # Calculate the flattened size after conv layers
-        flattened_size = 32 * board_size * board_size
-        
-        self.actor_fc = nn.Linear(flattened_size, action_space_size)
-        self.critic_fc = nn.Linear(flattened_size, 1)
-
-    def forward(self, state):
-        x = F.relu(self.conv1(state))
-        x = F.relu(self.conv2(x))
-        x = x.view(x.size(0), -1) # Flatten
-        
-        policy = F.softmax(self.actor_fc(x), dim=-1)
-        value = self.critic_fc(x)
-        
-        return policy, value
+from networks import ActorCritic, ResNet
 
 def select_action(policy, valid_actions, board_size):
     """
@@ -104,81 +79,47 @@ def get_agent_move(agent, board, player, device, board_size):
 
     return action_coords
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='A2C for Hex')
-    parser.add_argument('--board-size', type=int, default=7, help='Size of the Hex board')
-    parser.add_argument('--lr', type=float, default=0.001, help='Learning rate')
-    parser.add_argument('--gamma', type=float, default=0.99, help='Discount factor')
-    parser.add_argument('--n-episodes', type=int, default=50000, help='Number of episodes for training')
-    parser.add_argument('--plot-every', type=int, default=100, help='How often to update the plot')
-    parser.add_argument('--environment', type=str, default='apple', choices=['windows', 'apple', 'kaggle'], help='The training environment to set the device')
-    parser.add_argument('--play', action='store_true', help='Flag to play against the trained model')
-    parser.add_argument('--model-path', type=str, default='a2c_hex_agent.pth', help='Path to the saved model weights')
-    parser.add_argument('--human-player', type=int, default=1, choices=[1, -1], help='Choose to be player 1 (white) or -1 (black)')
-    parser.add_argument('--test-random', action='store_true', help='Test the agent against a random opponent')
-    parser.add_argument('--test-episodes', type=int, default=100, help='Number of episodes for testing')
-
-    args = parser.parse_args()
-
-    print(f"--- A2C Hex Agent --- ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
-
+def run_a2c(args):
+    """The main entry point for running the A2C agent."""
+    
     # Set device based on environment
     device = None
     if args.environment == 'apple':
         if torch.backends.mps.is_available():
             device = torch.device("mps")
-            print("Using MPS (Apple Silicon GPU)")
         else:
             device = torch.device("cpu")
-            print("MPS not available, using CPU")
     elif args.environment in ['windows', 'kaggle']:
         if torch.cuda.is_available():
             device = torch.device("cuda")
-            print("Using CUDA GPU")
         else:
             device = torch.device("cpu")
-            print("CUDA not available, using CPU")
     
     if device is None:
         device = torch.device("cpu")
-        print("Defaulting to CPU")
-
+        
     print(f"Board Size: {args.board_size}x{args.board_size}")
     print(f"Device: {device}")
     print("---------------------")
 
     env = hexPosition(args.board_size)
     action_space_size = args.board_size * args.board_size
-    agent = ActorCritic(args.board_size, action_space_size).to(device)
+    
+    if args.network == 'cnn':
+        agent = ActorCritic(args.board_size, action_space_size).to(device)
+    elif args.network == 'resnet':
+        # A2C is not optimized for ResNet, but we allow it for consistency.
+        # The user should be aware that this combination might not be ideal.
+        print("Warning: Using ResNet with the A2C agent may not be optimal.")
+        agent = ResNet(args.board_size, action_space_size).to(device)
+    else:
+        raise ValueError(f"Unknown network type: {args.network}")
 
-    if args.play:
-        try:
-            agent.load_state_dict(torch.load(args.model_path, map_location=device))
-            agent.eval()
-            print(f"Model loaded from {args.model_path}")
-
-            def machine_player(board, action_set):
-                # The hex engine passes the board and available moves.
-                # We need to know whose turn it is to make the agent see the correct board state.
-                # We can infer this from the number of pieces on the board.
-                num_white_stones = sum(row.count(1) for row in board)
-                num_black_stones = sum(row.count(-1) for row in board)
-                player = 1 if num_white_stones == num_black_stones else -1
-                return get_agent_move(agent, board, player, device, args.board_size)
-
-            env.human_vs_machine(human_player=args.human_player, machine=machine_player)
-
-        except FileNotFoundError:
-            print(f"Error: Model file not found at {args.model_path}. Please train the model first.")
-        except Exception as e:
-            print(f"An error occurred: {e}")
-
-    elif args.test_random:
+    if args.mode == 'play' or args.mode == 'test':
         try:
             agent.load_state_dict(torch.load(args.model_path, map_location=device))
             agent.eval()
             print(f"\nModel loaded from {args.model_path}")
-            print(f"--- Running Baseline Test vs. Random Agent ---")
 
             def agent_player_func(board, action_set):
                 num_white_stones = sum(row.count(1) for row in board)
@@ -186,71 +127,73 @@ if __name__ == '__main__':
                 player = 1 if num_white_stones == num_black_stones else -1
                 return get_agent_move(agent, board, player, device, args.board_size)
 
-            # Test as Player 1
-            p1_wins = 0
-            for _ in trange(args.test_episodes, desc="Agent as P1 (White)"):
-                env.reset()
-                winner = env.machine_vs_machine_silent(machine1=agent_player_func) # machine2 is random by default
-                if winner == 1:
-                    p1_wins += 1
+            if args.mode == 'play':
+                 env.human_vs_machine(human_player=args.human_player, machine=agent_player_func)
             
-            # Test as Player 2
-            p2_wins = 0
-            for _ in trange(args.test_episodes, desc="Agent as P2 (Black)"):
-                env.reset()
-                winner = env.machine_vs_machine_silent(machine2=agent_player_func) # machine1 is random by default
-                if winner == -1:
-                    p2_wins += 1
+            if args.mode == 'test':
+                print(f"--- Running Baseline Test vs. Random Agent ---")
+                # Test as Player 1
+                p1_wins = 0
+                for _ in trange(args.test_episodes, desc="Agent as P1 (White)"):
+                    env.reset()
+                    winner = env.machine_vs_machine_silent(machine1=agent_player_func)
+                    if winner == 1:
+                        p1_wins += 1
+                
+                # Test as Player 2
+                p2_wins = 0
+                for _ in trange(args.test_episodes, desc="Agent as P2 (Black)"):
+                    env.reset()
+                    winner = env.machine_vs_machine_silent(machine2=agent_player_func)
+                    if winner == -1:
+                        p2_wins += 1
 
-            print("\n--- Test Results ---")
-            print(f"Agent as Player 1 (White): {p1_wins}/{args.test_episodes} wins -> {p1_wins/args.test_episodes:.2%}")
-            print(f"Agent as Player 2 (Black): {p2_wins}/{args.test_episodes} wins -> {p2_wins/args.test_episodes:.2%}")
-            print("--------------------")
+                print("\n--- Test Results ---")
+                print(f"Agent as Player 1 (White): {p1_wins}/{args.test_episodes} wins -> {p1_wins/args.test_episodes:.2%}")
+                print(f"Agent as Player 2 (Black): {p2_wins}/{args.test_episodes} wins -> {p2_wins/args.test_episodes:.2%}")
+                print("--------------------")
 
         except FileNotFoundError:
             print(f"Error: Model file not found at {args.model_path}. Please train the model first.")
         except Exception as e:
             print(f"An error occurred: {e}")
 
-    else: # Training Mode
-        optimizer = optim.Adam(agent.parameters(), lr=args.lr)
+    elif args.mode == 'train':
+        optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
 
         print("\n--- Starting Training ---")
         
         win_rates = []
         p1_wins = 0
         games_played = 0
+        plot_every = 100 # Could be an arg
 
-        for i_episode in trange(args.n_episodes):
+        for i_episode in trange(args.n_episodes, desc="Training A2C"):
             env.reset()
-        
             episode_history = []
-        
+            
             while env.winner == 0:
                 current_player = env.player
-                # The board state needs to be on the correct device
                 board_tensor = torch.FloatTensor(env.board).unsqueeze(0).unsqueeze(0).to(device)
-            
-                # Flip board for black player to keep pov consistent for the network
+                
                 if current_player == -1:
                     board_tensor *= -1
 
                 policy, value = agent(board_tensor)
-            
+                
                 valid_actions = env.get_action_space()
                 action, log_prob = select_action(policy.cpu(), valid_actions, args.board_size)
-            
+                
                 env.move(action)
-            
+                
                 episode_history.append({'log_prob': log_prob, 'value': value, 'player': current_player})
 
-            # Game is over, update stats and calculate returns
             winner = env.winner
             games_played += 1
             if winner == 1:
                 p1_wins += 1
         
-            if i_episode % args.plot_every == 0 and games_played > 0:
+            if i_episode % plot_every == 0 and games_played > 0:
                 win_rates.append(p1_wins / games_played)
                 p1_wins = 0
                 games_played = 0
@@ -260,39 +203,37 @@ if __name__ == '__main__':
             for t in range(T):
                 player_at_t = episode_history[t]['player']
                 reward = 1 if player_at_t == winner else -1
-                G = (args.gamma ** (T - 1 - t)) * reward
+                G = (args.a2c_gamma ** (T - 1 - t)) * reward
                 returns.append(G)
-        
+            
             returns = torch.tensor(returns, dtype=torch.float32).to(device)
             if T > 1:
                 returns = (returns - returns.mean()) / (returns.std() + 1e-9)
 
             log_probs = torch.cat([h['log_prob'] for h in episode_history]).to(device)
             values = torch.cat([h['value'] for h in episode_history]).squeeze().to(device)
-        
+            
             advantages = returns - values
-        
+            
             actor_loss = -(log_probs * advantages.detach()).mean()
             critic_loss = F.mse_loss(values, returns)
-        
+            
             loss = actor_loss + 0.5 * critic_loss
-        
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
         print("\n--- Training Finished ---")
     
-        # Plotting
         plt.figure(figsize=(10, 5))
-        plt.plot(np.arange(len(win_rates)) * args.plot_every, win_rates)
-        plt.title('Player 1 Win Rate Over Training')
+        plt.plot(np.arange(len(win_rates)) * plot_every, win_rates)
+        plt.title('A2C Player 1 Win Rate Over Training')
         plt.xlabel('Episodes')
-        plt.ylabel(f'Win Rate (Avg over {args.plot_every} games)')
+        plt.ylabel(f'Win Rate (Avg over {plot_every} games)')
         plt.grid(True)
         plt.savefig('a2c_training_progress.png')
         print("Training plot saved to a2c_training_progress.png")
 
-        # Add saving the model
-        torch.save(agent.state_dict(), 'a2c_hex_agent.pth')
-        print("Model saved to a2c_hex_agent.pth") 
+        torch.save(agent.state_dict(), args.model_path)
+        print(f"Model saved to {args.model_path}") 
