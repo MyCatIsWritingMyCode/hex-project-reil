@@ -45,15 +45,15 @@ def main():
     print(f"--- Hex AI Engine --- ({datetime.now().strftime('%Y-%m-%d %H:%M:%S')}) ---")
     print(f"Agent Type: {args.agent_type.upper()} | Network: {args.network.upper()} | Mode: {args.mode.capitalize()}")
     
-    if args.agent_type == 'a2c':
+    if args.mode == 'tournament':
+        from tournament import run_tournament
+        run_tournament(args)
+    elif args.agent_type == 'a2c':
         from a2c_agent import run_a2c
         run_a2c(args)
     elif args.agent_type == 'mcts':
         from mcts_agent import run_mcts
         run_mcts(args)
-    elif args.mode == 'tournament':
-        from tournament import run_tournament
-        run_tournament(args)
 
     print("----------------------------------------------------")
 

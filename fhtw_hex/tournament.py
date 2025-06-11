@@ -55,7 +55,21 @@ def run_tournament(args):
     """The main entry point for running a tournament between two agents."""
     
     # Set device
-    device = torch.device("cuda" if torch.cuda.is_available() and args.environment != 'cpu' else "mps" if torch.backends.mps.is_available() and args.environment != 'cpu' else "cpu")
+    device = None
+    if args.environment == 'apple':
+        if torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
+    elif args.environment in ['windows', 'kaggle']:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
+    
+    if device is None:
+        device = torch.device("cpu")
+
     print(f"Using device: {device}")
     
     # Load player functions
