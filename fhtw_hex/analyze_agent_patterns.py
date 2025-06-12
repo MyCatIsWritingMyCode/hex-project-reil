@@ -89,7 +89,7 @@ def plot_heatmap(move_counts, title, filename):
         
     plt.figure(figsize=(8, 6))
     plt.imshow(move_counts, cmap='hot', interpolation='nearest')
-    plt.title(title, fontsize=14)
+    plt.title(f"{title} Heatmap. \nTotal games: {np.sum(move_counts)}. \nTotal moves: {np.sum(move_counts)}", fontsize=14)
     plt.colorbar(label='Move Frequency')
     plt.xlabel('Column')
     plt.ylabel('Row')

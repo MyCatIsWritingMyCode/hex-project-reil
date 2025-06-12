@@ -12,6 +12,7 @@ from networks import ActorCritic, ResNet
 import pandas as pd
 from plotting import generate_training_plots
 from torch.distributions import Categorical
+from baseline_agents import GreedyAgent, AggressiveAgent, DefensiveAgent
 
 class Node:
     """A node in the Monte Carlo Tree Search tree."""
@@ -169,6 +170,33 @@ def execute_episode(agent, mcts, args):
     examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
     return examples, winner
 
+def execute_episode_vs_opponent(agent, mcts, opponent, args):
+    """Execute a single episode of play against a fixed opponent."""
+    env = hexPosition(args.board_size)
+    train_examples = []
+    
+    while env.winner == 0:
+        # MCTS agent's turn
+        if env.player == 1:
+            action_probs = mcts.get_action_probs(env, args.mcts_simulations)
+            canonical_board = np.array(env.board) # Player 1 is canonical
+            pi = np.zeros(args.board_size**2)
+            for action, prob in action_probs.items():
+                pi[action[0] * args.board_size + action[1]] = prob
+            
+            train_examples.append([canonical_board, 1, pi])
+            action = list(action_probs.keys())[np.random.choice(len(action_probs), p=list(action_probs.values()))]
+            env.move(action)
+        # Opponent's turn
+        else:
+            action = opponent.select_move(env.board, env.get_action_space(), -1)
+            env.move(action)
+
+    winner = env.winner
+    # Assign outcomes to the training examples for the MCTS agent (player 1)
+    examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
+    return examples, winner
+
 def run_mcts(args):
     """The main entry point for running the MCTS agent."""
     
@@ -248,51 +276,86 @@ def run_mcts(args):
     elif args.mode == 'train':
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
         
-        # --- Set up logging ---
         training_log = []
         all_train_examples = []
-        p1_wins = 0
-
-        print("\n--- Starting Self-Play ---")
-        for i in trange(args.n_episodes, desc="Self-Play"):
-            new_examples, winner = execute_episode(agent, mcts, args)
-            if winner == 1:
-                p1_wins += 1
-            all_train_examples.extend(new_examples)
-            
-        # --- Dynamic Oversampling Calculation ---
-        p1_win_rate = p1_wins / args.n_episodes
-        print(f"\n--- Self-Play Complete: P1 Win Rate was {p1_win_rate:.2%} ---")
         
-        # Adjust the P2 oversampling ratio based on P1's performance
-        p2_oversampling_ratio = 1.0 + args.dynamic_oversampling_strength * (p1_win_rate - args.p1_win_rate_target)
-        p2_oversampling_ratio = max(0.1, p2_oversampling_ratio) # Prevent zero or negative ratios
-        print(f"Target P1 Win Rate: {args.p1_win_rate_target:.2%}. Dynamic P2 Oversampling Ratio set to: {p2_oversampling_ratio:.2f}")
-        # ---
+        # --- Staged Training Setup ---
+        if args.staged_training:
+            print("\n--- Starting Staged Training ---")
+            opponents = {
+                "greedy": GreedyAgent(),
+                "aggressive": AggressiveAgent(),
+                "defensive": DefensiveAgent()
+            }
+            stages = [
+                ("greedy", args.stage1_episodes),
+                ("aggressive", args.stage2_episodes),
+                ("defensive", args.stage3_episodes),
+            ]
+            
+            current_episode = 0
+            for stage_name, num_episodes in stages:
+                opponent = opponents[stage_name]
+                print(f"\n--- Stage: Training vs {stage_name.capitalize()} Agent for {num_episodes} episodes ---")
+                for _ in trange(num_episodes, desc=f"vs {stage_name.capitalize()}"):
+                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, args)
+                    all_train_examples.extend(new_examples)
+                    current_episode += 1
 
-        print("\n--- Starting Training ---")
+            # --- Final Mixed-Pool Training ---
+            if args.mixed_pool_episodes > 0:
+                print(f"\n--- Stage: Training vs Mixed Pool for {args.mixed_pool_episodes} episodes ---")
+                opponent_pool = list(opponents.values())
+                for _ in trange(args.mixed_pool_episodes, desc="vs Mixed Pool"):
+                    opponent = np.random.choice(opponent_pool)
+                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, args)
+                    all_train_examples.extend(new_examples)
+        else:
+            # --- Original Self-Play Training ---
+            p1_wins = 0
+            print("\n--- Starting Self-Play ---")
+            for i in trange(args.n_episodes, desc="Self-Play"):
+                new_examples, winner = execute_episode(agent, mcts, args)
+                if winner == 1:
+                    p1_wins += 1
+                all_train_examples.extend(new_examples)
+            
+            p1_win_rate = p1_wins / args.n_episodes
+            print(f"\n--- Self-Play Complete: P1 Win Rate was {p1_win_rate:.2%} ---")
+            p2_oversampling_ratio = 1.0 + args.dynamic_oversampling_strength * (p1_win_rate - args.p1_win_rate_target)
+            p2_oversampling_ratio = max(0.1, p2_oversampling_ratio)
+            print(f"Target P1 Win Rate: {args.p1_win_rate_target:.2%}. Dynamic P2 Oversampling Ratio set to: {p2_oversampling_ratio:.2f}")
+
+        # --- Training Phase ---
+        print("\n--- Starting Model Training ---")
         agent.train()
-
-        # Separate data for potential oversampling
-        p1_examples = [ex for ex in all_train_examples if ex[1] == 1]
-        p2_examples = [ex for ex in all_train_examples if ex[1] == -1]
+        
+        # In staged training, we don't do P2 oversampling as we control the opponent.
+        # We can just shuffle all examples gathered.
+        if not args.staged_training:
+            # Separate data for potential oversampling
+            p1_examples = [ex for ex in all_train_examples if ex[1] == 1]
+            p2_examples = [ex for ex in all_train_examples if ex[1] == -1]
 
         for epoch in trange(args.mcts_epochs, desc="Epochs"):
-            np.random.shuffle(all_train_examples)
-            
-            for i in range(0, len(all_train_examples), args.mcts_batch_size):
+            if args.staged_training:
+                np.random.shuffle(all_train_examples)
+                train_batch_source = all_train_examples
+            else: # Handle oversampling for self-play
                 p2_batch_size = int(args.mcts_batch_size * (p2_oversampling_ratio / (1 + p2_oversampling_ratio)))
                 p1_batch_size = args.mcts_batch_size - p2_batch_size
-
                 p1_sample = [p1_examples[i] for i in np.random.randint(len(p1_examples), size=p1_batch_size)] if p1_batch_size > 0 and len(p1_examples) > 0 else []
                 p2_sample = [p2_examples[i] for i in np.random.randint(len(p2_examples), size=p2_batch_size)] if p2_batch_size > 0 and len(p2_examples) > 0 else []
-                
                 if not p1_sample and not p2_sample: continue
+                train_batch_source = p1_sample + p2_sample
+                np.random.shuffle(train_batch_source)
 
-                batch = p1_sample + p2_sample
-                np.random.shuffle(batch) # Shuffle the combined batch
+
+            for i in range(0, len(train_batch_source), args.mcts_batch_size):
+                batch = train_batch_source[i:i+args.mcts_batch_size]
+                if not batch: continue
                 
-                boards, _, pis, vs = zip(*batch) # The player (index 1) is no longer needed
+                boards, _, pis, vs = zip(*batch)
                 
                 boards = torch.FloatTensor(np.array(boards)).unsqueeze(1).to(device)
                 target_pis = torch.FloatTensor(np.array(pis)).to(device)
@@ -311,15 +374,18 @@ def run_mcts(args):
 
                 # --- Log metrics for this training step (once per epoch for simplicity) ---
                 if i == 0:
-                    training_log.append({
-                        'episode': (epoch + 1) * args.n_episodes, # Approximate episode count
-                        'p1_win_rate_batch': p1_win_rate,
-                        'p2_oversampling_ratio': p2_oversampling_ratio,
+                    log_entry = {
+                        'epoch': epoch,
                         'actor_loss': loss_pi.item(),
                         'critic_loss': loss_v.item(),
                         'total_loss': total_loss.item(),
                         'policy_entropy': policy_entropy
-                    })
+                    }
+                    if not args.staged_training:
+                        log_entry['p1_win_rate_batch'] = p1_win_rate
+                        log_entry['p2_oversampling_ratio'] = p2_oversampling_ratio
+                    
+                    training_log.append(log_entry)
 
                 optimizer.zero_grad()
                 total_loss.backward()
@@ -363,12 +429,21 @@ if __name__ == '__main__':
     parser.add_argument('--mcts-simulations', type=int, default=15, help='Number of MCTS simulations per move')
     parser.add_argument('--mcts-epochs', type=int, default=5, help='Number of training epochs per iteration')
     parser.add_argument('--mcts-batch-size', type=int, default=32, help='Batch size for training')
+    parser.add_argument('--test-episodes', type=int, default=50, help='Number of episodes for post-training test vs random')
     parser.add_argument('--environment', type=str, default='apple', choices=['windows', 'apple', 'kaggle'], help='The training environment to set the device')
     parser.add_argument('--network', type=str, default='cnn', choices=['cnn', 'resnet'], help='Network type')
     parser.add_argument('--mode', type=str, default='train', choices=['train'])
     parser.add_argument('--save-checkpoints', action='store_true', help='Save model checkpoints after each epoch')
     parser.add_argument('--p1-win-rate-target', type=float, default=0.5, help='Target P1 win rate for dynamic oversampling')
     parser.add_argument('--dynamic-oversampling-strength', type=float, default=0.1, help='Strength of dynamic oversampling')
+    parser.add_argument('--model-path', type=str, default=None, help='Path to save the final model.')
+
+    # Staged training arguments
+    parser.add_argument('--staged-training', action='store_true', help='Enable staged training against baseline agents.')
+    parser.add_argument('--stage1-episodes', type=int, default=20, help='Number of episodes against greedy agent.')
+    parser.add_argument('--stage2-episodes', type=int, default=20, help='Number of episodes against aggressive agent.')
+    parser.add_argument('--stage3-episodes', type=int, default=20, help='Number of episodes against defensive agent.')
+    parser.add_argument('--mixed-pool-episodes', type=int, default=40, help='Number of episodes against a mixed pool of agents.')
 
     args = parser.parse_args()
 
