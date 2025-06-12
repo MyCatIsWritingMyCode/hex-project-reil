@@ -261,7 +261,7 @@ def run_mcts(args):
                 
                 boards, pis, vs = zip(*batch)
                 
-                boards = torch.FloatTensor(np.array(boards)).to(device)
+                boards = torch.FloatTensor(np.array(boards)).unsqueeze(1).to(device)
                 target_pis = torch.FloatTensor(np.array(pis)).to(device)
                 target_vs = torch.FloatTensor(np.array(vs)).to(device)
 
