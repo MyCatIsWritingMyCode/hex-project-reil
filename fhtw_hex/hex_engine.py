@@ -4,6 +4,8 @@
 #pickle
 #Of the above only 'copy' is necessary for basic functionality
 
+from datetime import datetime
+
 class hexPosition (object):
     """
     Objects of this class correspond to a game of Hex.
@@ -199,59 +201,39 @@ class hexPosition (object):
                         visited.append(new[-1])
     def human_vs_machine (self, human_player=1, machine=None):
         """
-        Play a game against an AI. The variable machine must point to a function that maps a board state and an action set to an element of the action set.
-        If machine is not specified random actions will be used.
-        This method should not be used for training an algorithm.
+        Allows a human to play against a machine agent.
         """
-        #default to random player if 'machine' not given
-        if machine == None:
-            def machine (board, action_set):
-                from random import choice
-                return choice(action_set)
-        def translator (string):
-            #This function translates human terminal input into the proper array indices.
-            number_translated = 27
-            letter_translated = 27
-            names = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-            if len(string) > 0:
-                letter = string[0]
-            if len(string) > 1:
-                number1 = string[1]
-            if len(string) > 2:
-                number2 = string[2]
-            for i in range(26):
-                if names[i] == letter:
-                    letter_translated = i
-                    break
-            if len(string) > 2:
-                for i in range(10,27):
-                    if number1 + number2 == "{}".format(i):
-                        number_translated = i-1
-            else:
-                for i in range(1,10):
-                    if number1 == "{}".format(i):
-                        number_translated = i-1
-            return (number_translated, letter_translated)
-        #the match
-        self.reset()
+        from plotting import plot_board_state # Lazy import for plotting
+        
         while self.winner == 0:
             self.print()
-            possible_actions = self.get_action_space()
             if self.player == human_player:
-                while True:
-                    human_input = translator(input("Enter your move (e.g. 'A1'): "))
-                    if human_input in possible_actions:
-                        break
-                self.move(human_input)
+                try:
+                    move_str = input(f"Player {self.player}, enter your move (e.g., 'A1') or 's' to save board: ")
+                    if move_str.lower() == 's':
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"board_snapshot_{timestamp}.png"
+                        plot_board_state(self.board, filename)
+                        continue
+
+                    col = ord(move_str[0].upper()) - ord('A')
+                    row = int(move_str[1:]) - 1
+                    
+                    if self.board[row][col] != 0:
+                        print("Invalid move: cell is already occupied.")
+                        continue
+                    self.move((row, col))
+                except (ValueError, IndexError):
+                    print("Invalid input format. Please use format like 'A1'.")
             else:
-                chosen = machine(self.board, possible_actions)
-                self.move(chosen)
-            if self.winner == 1:
-                self.print()
-                self._evaluate_white(verbose=True)
-            if self.winner == -1:
-                self.print()
-                self._evaluate_black(verbose=True)
+                print(f"Machine player {self.player} is thinking...")
+                move = machine(self.board, self.get_action_space())
+                self.move(move)
+                print(f"Machine chose move: {chr(ord('A') + move[1])}{move[0] + 1}")
+        
+        self.print()
+        print(f"\n--- Game Over ---")
+        print(f"Winner is Player {self.winner}")
     def recode_black_as_white (self, print=False, invert_colors=True):
         """
         Returns a board where black is recoded as white and wants to connect horizontally.

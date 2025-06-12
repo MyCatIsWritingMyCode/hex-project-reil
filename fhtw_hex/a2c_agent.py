@@ -6,6 +6,8 @@ from hex_engine import hexPosition
 from tqdm import trange
 import matplotlib.pyplot as plt
 from networks import ActorCritic, ResNet
+import pandas as pd
+from plotting import generate_training_plots
 
 def select_action(policy, valid_actions, board_size):
     """
@@ -108,9 +110,6 @@ def run_a2c(args):
     if args.network == 'cnn':
         agent = ActorCritic(args.board_size, action_space_size).to(device)
     elif args.network == 'resnet':
-        # A2C is not optimized for ResNet, but we allow it for consistency.
-        # The user should be aware that this combination might not be ideal.
-        print("Warning: Using ResNet with the A2C agent may not be optimal.")
         agent = ResNet(args.board_size, action_space_size).to(device)
     else:
         raise ValueError(f"Unknown network type: {args.network}")
@@ -161,12 +160,13 @@ def run_a2c(args):
     elif args.mode == 'train':
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
 
-        print("\n--- Starting Training ---")
+        print("\n--- Starting Training (A2C v2) ---")
         
-        win_rates = []
-        p1_wins = 0
-        games_played = 0
-        plot_every = 100 # Could be an arg
+        # --- Set up logging ---
+        training_log = []
+        experience_buffer = []
+        p1_wins_in_batch = 0
+        games_in_batch = 0
 
         for i_episode in trange(args.n_episodes, desc="Training A2C"):
             env.reset()
@@ -180,24 +180,23 @@ def run_a2c(args):
                     board_tensor *= -1
 
                 policy, value = agent(board_tensor)
-                
                 valid_actions = env.get_action_space()
                 action, log_prob = select_action(policy.cpu(), valid_actions, args.board_size)
-                
+                board_state_before_move = np.copy(env.board)
                 env.move(action)
-                
-                episode_history.append({'log_prob': log_prob, 'value': value, 'player': current_player})
+                episode_history.append({
+                    'log_prob': log_prob, 
+                    'value': value, 
+                    'player': current_player, 
+                    'board_state_before_move': board_state_before_move
+                })
 
+            # --- Store episode results ---
             winner = env.winner
-            games_played += 1
+            games_in_batch += 1
             if winner == 1:
-                p1_wins += 1
-        
-            if i_episode % plot_every == 0 and games_played > 0:
-                win_rates.append(p1_wins / games_played)
-                p1_wins = 0
-                games_played = 0
-
+                p1_wins_in_batch += 1
+            
             returns = []
             T = len(episode_history)
             for t in range(T):
@@ -206,34 +205,105 @@ def run_a2c(args):
                 G = (args.a2c_gamma ** (T - 1 - t)) * reward
                 returns.append(G)
             
-            returns = torch.tensor(returns, dtype=torch.float32).to(device)
+            # Normalize returns for this episode
+            returns = torch.tensor(returns, dtype=torch.float32)
             if T > 1:
                 returns = (returns - returns.mean()) / (returns.std() + 1e-9)
+            
+            for t in range(T):
+                board_state = np.copy(episode_history[t]['board_state_before_move'])
+                if episode_history[t]['player'] == -1:
+                    board_state *= -1 # Canonical form
+                    
+                experience_buffer.append({
+                    'log_prob': episode_history[t]['log_prob'],
+                    'value': episode_history[t]['value'],
+                    'return': returns[t],
+                    'player': episode_history[t]['player'],
+                    'board_state': board_state
+                })
+            
+            # --- Perform a training update if the batch is full ---
+            if games_in_batch >= args.a2c_update_every_n_episodes:
+                
+                # --- Dynamic Oversampling Calculation ---
+                p1_win_rate = p1_wins_in_batch / games_in_batch if games_in_batch > 0 else 0
+                p2_oversampling_ratio = 1.0 + args.dynamic_oversampling_strength * (p1_win_rate - args.p1_win_rate_target)
+                p2_oversampling_ratio = max(0.1, p2_oversampling_ratio)
 
-            log_probs = torch.cat([h['log_prob'] for h in episode_history]).to(device)
-            values = torch.cat([h['value'] for h in episode_history]).squeeze().to(device)
-            
-            advantages = returns - values
-            
-            actor_loss = -(log_probs * advantages.detach()).mean()
-            critic_loss = F.mse_loss(values, returns)
-            
-            loss = actor_loss + 0.5 * critic_loss
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+                # --- Separate data for sampling ---
+                p1_exp = [exp for exp in experience_buffer if exp['player'] == 1]
+                p2_exp = [exp for exp in experience_buffer if exp['player'] == -1]
+                
+                if not p1_exp or not p2_exp: # Skip if one player had no moves
+                    experience_buffer.clear()
+                    p1_wins_in_batch = 0
+                    games_in_batch = 0
+                    continue
+
+                # --- Construct Training Batch ---
+                batch_size = len(experience_buffer)
+                p2_batch_size = int(batch_size * (p2_oversampling_ratio / (1 + p2_oversampling_ratio)))
+                p1_batch_size = batch_size - p2_batch_size
+
+                p1_sample_idx = np.random.randint(len(p1_exp), size=p1_batch_size)
+                p2_sample_idx = np.random.randint(len(p2_exp), size=p2_batch_size)
+
+                p1_sample = [p1_exp[i] for i in p1_sample_idx]
+                p2_sample = [p2_exp[i] for i in p2_sample_idx]
+                
+                batch = p1_sample + p2_sample
+                
+                # --- Perform Update ---
+                log_probs = torch.cat([h['log_prob'] for h in batch]).to(device)
+                values = torch.cat([h['value'] for h in batch]).squeeze().to(device)
+                returns_batch = torch.tensor([h['return'] for h in batch], dtype=torch.float32).to(device)
+                
+                # --- Calculate Entropy ---
+                # Re-evaluate policy for the batch to calculate current entropy
+                boards_for_entropy = [exp['board_state'] for exp in batch]
+                boards_tensor = torch.FloatTensor(np.array(boards_for_entropy)).unsqueeze(1).to(device)
+                with torch.no_grad():
+                    policy_batch, _ = agent(boards_tensor)
+                
+                # Use the distribution from select_action to get entropy
+                entropy_dist = Categorical(probs=policy_batch)
+                policy_entropy = entropy_dist.entropy().mean().item()
+
+                advantages = returns_batch - values
+                
+                actor_loss = -(log_probs * advantages.detach()).mean()
+                critic_loss = F.mse_loss(values, returns_batch)
+                loss = actor_loss + 0.5 * critic_loss
+                
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+                # --- Log metrics for this batch ---
+                training_log.append({
+                    'episode': i_episode,
+                    'p1_win_rate_batch': p1_win_rate,
+                    'p2_oversampling_ratio': p2_oversampling_ratio,
+                    'actor_loss': actor_loss.item(),
+                    'critic_loss': critic_loss.item(),
+                    'total_loss': loss.item(),
+                    'policy_entropy': policy_entropy
+                })
+
+                # --- Clear buffers for next batch ---
+                experience_buffer.clear()
+                p1_wins_in_batch = 0
+                games_in_batch = 0
 
         print("\n--- Training Finished ---")
-    
-        plt.figure(figsize=(10, 5))
-        plt.plot(np.arange(len(win_rates)) * plot_every, win_rates)
-        plt.title('A2C Player 1 Win Rate Over Training')
-        plt.xlabel('Episodes')
-        plt.ylabel(f'Win Rate (Avg over {plot_every} games)')
-        plt.grid(True)
-        plt.savefig('a2c_training_progress.png')
-        print("Training plot saved to a2c_training_progress.png")
+        
+        # --- Save detailed log and generate plots ---
+        if training_log:
+            log_df = pd.DataFrame(training_log)
+            log_df.to_csv('a2c_training_log.csv', index=False)
+            print("Detailed training log saved to a2c_training_log.csv")
+            generate_training_plots(log_df, 'A2C', args.p1_win_rate_target)
 
         torch.save(agent.state_dict(), args.model_path)
         print(f"Model saved to {args.model_path}") 

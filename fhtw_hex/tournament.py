@@ -1,14 +1,24 @@
 import torch
 from tqdm import trange
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
 
 from hex_engine import hexPosition
 from networks import ActorCritic, ResNet
 from a2c_agent import get_agent_move as get_a2c_move
 from mcts_agent import MCTS
+from submission.greedy_agent_adapter import create_greedy_player
 
 def load_player_func(args, player_num, device):
     """Loads a model and returns a function that takes a board and returns a move."""
     agent_type = getattr(args, f'p{player_num}_agent_type')
+    
+    # Handle the greedy agent case separately
+    if agent_type == 'greedy':
+        print(f"Loading Player {player_num}: Agent=GREEDY")
+        return create_greedy_player()
+
     network_type = getattr(args, f'p{player_num}_network_type')
     model_path = getattr(args, f'p{player_num}_model_path')
 
@@ -89,27 +99,37 @@ def run_tournament(args):
     print("\nAll players loaded successfully. Let the tournament begin!")
 
     env = hexPosition(args.board_size)
+    tournament_log = []
     
-    # --- Round 1: P1 is Player 1 (White) ---
-    print("\n--- Round 1: P1 is White, P2 is Black ---")
+    # --- Round 1: P1 is White, P2 is Black ---
+    p1_label = f"P1 ({args.p1_agent_type.upper()})"
+    p2_label = f"P2 ({args.p2_agent_type.upper()})"
+    print(f"\n--- Round 1: {p1_label} is White, {p2_label} is Black ---")
     p1_as_white_wins = 0
-    for _ in trange(args.test_episodes // 2, desc="P1 as White"):
+    for _ in trange(args.test_episodes // 2, desc=f"{p1_label} as White"):
         winner = env.machine_vs_machine_silent(machine1=player1_func, machine2=player2_func)
         if winner == 1:
             p1_as_white_wins += 1
+        tournament_log.append({'round': 1, 'p1_agent': args.p1_agent_type, 'p2_agent': args.p2_agent_type, 'winner': 'p1' if winner == 1 else 'p2'})
     
-    # --- Round 2: P2 is Player 1 (White) ---
-    print("\n--- Round 2: P2 is White, P1 is Black ---")
+    # --- Round 2: P2 is White, P1 is Black ---
+    print(f"\n--- Round 2: {p2_label} is White, {p1_label} is Black ---")
     p1_as_black_wins = 0
-    for _ in trange(args.test_episodes // 2, desc="P1 as Black"):
+    for _ in trange(args.test_episodes // 2, desc=f"{p1_label} as Black"):
         winner = env.machine_vs_machine_silent(machine1=player2_func, machine2=player1_func)
         if winner == -1:
             p1_as_black_wins += 1
+        tournament_log.append({'round': 2, 'p1_agent': args.p2_agent_type, 'p2_agent': args.p1_agent_type, 'winner': 'p1' if winner == -1 else 'p2'})
+
+    # --- Save Detailed Log ---
+    log_df = pd.DataFrame(tournament_log)
+    log_df.to_csv('tournament_results.csv', index=False)
+    print("\nDetailed tournament results saved to tournament_results.csv")
 
     # --- Final Results ---
     total_p1_wins = p1_as_white_wins + p1_as_black_wins
     total_games = args.test_episodes
-    p1_win_rate = total_p1_wins / total_games
+    p1_win_rate = total_p1_wins / total_games if total_games > 0 else 0
     
     print("\n--- Tournament Results ---")
     print(f"Player 1 ({args.p1_agent_type.upper()}/{args.p1_network_type.upper()}) vs. Player 2 ({args.p2_agent_type.upper()}/{args.p2_network_type.upper()})")
@@ -118,4 +138,24 @@ def run_tournament(args):
     print(f"P1 Wins as Black: {p1_as_black_wins}/{args.test_episodes // 2}")
     print("--------------------------")
     print(f"Overall P1 Win Rate: {total_p1_wins}/{total_games} = {p1_win_rate:.2%}")
-    print("--------------------------\n") 
+    print("--------------------------\n")
+    
+    # --- Generate Pie Chart ---
+    p1_name = args.p1_agent_type.upper()
+    p2_name = args.p2_agent_type.upper()
+    labels = [
+        f'{p1_name} Wins as White ({p1_as_white_wins})', 
+        f'{p1_name} Wins as Black ({p1_as_black_wins})',
+        f'{p2_name} Wins as White ({args.test_episodes // 2 - p1_as_black_wins})',
+        f'{p2_name} Wins as Black ({args.test_episodes // 2 - p1_as_white_wins})'
+    ]
+    sizes = [p1_as_white_wins, p1_as_black_wins, (args.test_episodes // 2 - p1_as_black_wins), (args.test_episodes // 2 - p1_as_white_wins)]
+    colors = ['#ff9999','#66b3ff','#99ff99','#ffcc99']
+    
+    fig1, ax1 = plt.subplots()
+    ax1.pie(sizes, labels=labels, autopct='%1.1f%%', startangle=90, colors=colors)
+    ax1.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+    plt.title(f'Tournament Results: {p1_name} (P1) vs {p2_name} (P2)')
+    
+    plt.savefig('tournament_results.png')
+    print("Tournament results plot saved to tournament_results.png") 

@@ -12,19 +12,23 @@ def main():
     parser.add_argument('--model-path', type=str, help='Path for the primary model.')
     
     # Tournament specific arguments
-    parser.add_argument('--p1-agent-type', type=str, default='a2c', choices=['a2c', 'mcts'], help='Agent type for Player 1 in tournament.')
+    parser.add_argument('--p1-agent-type', type=str, default='a2c', choices=['a2c', 'mcts', 'greedy'], help='Agent type for Player 1 in tournament.')
     parser.add_argument('--p1-network-type', type=str, default='cnn', choices=['cnn', 'resnet'], help='Network for Player 1.')
     parser.add_argument('--p1-model-path', type=str, default='a2c_hex_agent.pth', help='Model path for Player 1.')
-    parser.add_argument('--p2-agent-type', type=str, default='mcts', choices=['a2c', 'mcts'], help='Agent type for Player 2 in tournament.')
+    parser.add_argument('--p2-agent-type', type=str, default='mcts', choices=['a2c', 'mcts', 'greedy'], help='Agent type for Player 2 in tournament.')
     parser.add_argument('--p2-network-type', type=str, default='resnet', choices=['cnn', 'resnet'], help='Network for Player 2.')
     parser.add_argument('--p2-model-path', type=str, default='mcts_hex_agent.pth', help='Model path for Player 2.')
 
     # Training arguments
     parser.add_argument('--n-episodes', type=int, default=1000, help='Number of episodes for training.')
     parser.add_argument('--lr', type=float, default=0.001, help='Learning rate.')
+    parser.add_argument('--save-checkpoints', action='store_true', help='Save model checkpoints after each training epoch.')
+    parser.add_argument('--p1-win-rate-target', type=float, default=0.55, help='Target win rate for P1 to dynamically adjust P2 oversampling.')
+    parser.add_argument('--dynamic-oversampling-strength', type=float, default=2.0, help='Multiplier for how aggressively to oversample P2 data.')
     
     # A2C specific arguments
     parser.add_argument('--a2c-gamma', type=float, default=0.99, help='Discount factor for A2C.')
+    parser.add_argument('--a2c-update-every-n-episodes', type=int, default=16, help='Number of episodes to collect before an A2C training update.')
     
     # MCTS specific arguments
     parser.add_argument('--mcts-simulations', type=int, default=50, help='Number of MCTS simulations per move.')

@@ -9,6 +9,9 @@ from datetime import datetime
 import math
 from copy import deepcopy
 from networks import ActorCritic, ResNet
+import pandas as pd
+from plotting import generate_training_plots
+from torch.distributions import Categorical
 
 class Node:
     """A node in the Monte Carlo Tree Search tree."""
@@ -161,8 +164,10 @@ def execute_episode(agent, mcts, args):
         action = list(action_probs.keys())[np.random.choice(len(action_probs), p=list(action_probs.values()))]
         env.move(action)
 
-    # Return training examples with the final outcome
-    return [(x[0], x[2], env.winner * x[1]) for x in train_examples]
+    # Return training examples and the winner of the game
+    winner = env.winner
+    examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
+    return examples, winner
 
 def run_mcts(args):
     """The main entry point for running the MCTS agent."""
@@ -242,24 +247,52 @@ def run_mcts(args):
 
     elif args.mode == 'train':
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
+        
+        # --- Set up logging ---
+        training_log = []
         all_train_examples = []
-        loss_history = []  # To store loss values for plotting
+        p1_wins = 0
 
         print("\n--- Starting Self-Play ---")
         for i in trange(args.n_episodes, desc="Self-Play"):
-            all_train_examples.extend(execute_episode(agent, mcts, args))
+            new_examples, winner = execute_episode(agent, mcts, args)
+            if winner == 1:
+                p1_wins += 1
+            all_train_examples.extend(new_examples)
+            
+        # --- Dynamic Oversampling Calculation ---
+        p1_win_rate = p1_wins / args.n_episodes
+        print(f"\n--- Self-Play Complete: P1 Win Rate was {p1_win_rate:.2%} ---")
+        
+        # Adjust the P2 oversampling ratio based on P1's performance
+        p2_oversampling_ratio = 1.0 + args.dynamic_oversampling_strength * (p1_win_rate - args.p1_win_rate_target)
+        p2_oversampling_ratio = max(0.1, p2_oversampling_ratio) # Prevent zero or negative ratios
+        print(f"Target P1 Win Rate: {args.p1_win_rate_target:.2%}. Dynamic P2 Oversampling Ratio set to: {p2_oversampling_ratio:.2f}")
+        # ---
 
         print("\n--- Starting Training ---")
         agent.train()
+
+        # Separate data for potential oversampling
+        p1_examples = [ex for ex in all_train_examples if ex[1] == 1]
+        p2_examples = [ex for ex in all_train_examples if ex[1] == -1]
+
         for epoch in trange(args.mcts_epochs, desc="Epochs"):
             np.random.shuffle(all_train_examples)
             
-            # Mini-batch training
             for i in range(0, len(all_train_examples), args.mcts_batch_size):
-                sample_indices = np.random.randint(len(all_train_examples), size=args.mcts_batch_size)
-                batch = [all_train_examples[j] for j in sample_indices]
+                p2_batch_size = int(args.mcts_batch_size * (p2_oversampling_ratio / (1 + p2_oversampling_ratio)))
+                p1_batch_size = args.mcts_batch_size - p2_batch_size
+
+                p1_sample = [p1_examples[i] for i in np.random.randint(len(p1_examples), size=p1_batch_size)] if p1_batch_size > 0 and len(p1_examples) > 0 else []
+                p2_sample = [p2_examples[i] for i in np.random.randint(len(p2_examples), size=p2_batch_size)] if p2_batch_size > 0 and len(p2_examples) > 0 else []
                 
-                boards, pis, vs = zip(*batch)
+                if not p1_sample and not p2_sample: continue
+
+                batch = p1_sample + p2_sample
+                np.random.shuffle(batch) # Shuffle the combined batch
+                
+                boards, _, pis, vs = zip(*batch) # The player (index 1) is no longer needed
                 
                 boards = torch.FloatTensor(np.array(boards)).unsqueeze(1).to(device)
                 target_pis = torch.FloatTensor(np.array(pis)).to(device)
@@ -267,17 +300,45 @@ def run_mcts(args):
 
                 out_pi, out_v = agent(boards)
                 
+                # --- Calculate Entropy ---
+                entropy_dist = Categorical(probs=out_pi)
+                policy_entropy = entropy_dist.entropy().mean().item()
+
                 loss_pi = -torch.sum(target_pis * F.log_softmax(out_pi, dim=1)) / target_pis.size()[0]
                 loss_v = F.mse_loss(out_v.view(-1), target_vs)
                 
                 total_loss = loss_pi + loss_v
-                loss_history.append(total_loss.item())
+
+                # --- Log metrics for this training step (once per epoch for simplicity) ---
+                if i == 0:
+                    training_log.append({
+                        'episode': (epoch + 1) * args.n_episodes, # Approximate episode count
+                        'p1_win_rate_batch': p1_win_rate,
+                        'p2_oversampling_ratio': p2_oversampling_ratio,
+                        'actor_loss': loss_pi.item(),
+                        'critic_loss': loss_v.item(),
+                        'total_loss': total_loss.item(),
+                        'policy_entropy': policy_entropy
+                    })
 
                 optimizer.zero_grad()
                 total_loss.backward()
                 optimizer.step()
 
-        # Save the trained model
+            # Save a checkpoint after each epoch if requested
+            if args.save_checkpoints:
+                save_path = f"mcts_checkpoint_epoch{epoch+1}.pth"
+                torch.save(agent.state_dict(), save_path)
+                print(f"\nSaved checkpoint to {save_path}")
+
+        # --- Save detailed log and generate plots ---
+        if training_log:
+            log_df = pd.DataFrame(training_log)
+            log_df.to_csv('mcts_training_log.csv', index=False)
+            print("Detailed training log saved to mcts_training_log.csv")
+            generate_training_plots(log_df, 'MCTS', args.p1_win_rate_target)
+
+        # Save the final trained model
         if args.model_path:
             save_path = args.model_path
         else:
@@ -288,7 +349,7 @@ def run_mcts(args):
 
         # Plot and save the training progress
         plt.figure(figsize=(10, 5))
-        plt.plot(loss_history)
+        plt.plot(training_log['total_loss'])
         plt.title(f"MCTS Training Loss ({args.network.upper()}, {args.board_size}x{args.board_size})")
         plt.xlabel("Training Step")
         plt.ylabel("Total Loss")
@@ -315,6 +376,9 @@ if __name__ == '__main__':
     parser.add_argument('--environment', type=str, default='apple', choices=['windows', 'apple', 'kaggle'], help='The training environment to set the device')
     parser.add_argument('--network', type=str, default='cnn', choices=['cnn', 'resnet'], help='Network type')
     parser.add_argument('--mode', type=str, default='train', choices=['train'])
+    parser.add_argument('--save-checkpoints', action='store_true', help='Save model checkpoints after each epoch')
+    parser.add_argument('--p1-win-rate-target', type=float, default=0.5, help='Target P1 win rate for dynamic oversampling')
+    parser.add_argument('--dynamic-oversampling-strength', type=float, default=0.1, help='Strength of dynamic oversampling')
 
     args = parser.parse_args()
 
