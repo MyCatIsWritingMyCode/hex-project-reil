@@ -170,30 +170,42 @@ def execute_episode(agent, mcts, args):
     examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
     return examples, winner
 
-def execute_episode_vs_opponent(agent, mcts, opponent, args):
-    """Execute a single episode of play against a fixed opponent."""
+def execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args):
+    """
+    Execute a single episode of play against a fixed opponent, with the MCTS agent
+    playing as the specified player.
+    """
     env = hexPosition(args.board_size)
     train_examples = []
     
     while env.winner == 0:
-        # MCTS agent's turn
-        if env.player == 1:
+        current_player = env.player
+        if current_player == mcts_player:
+            # MCTS agent's turn
             action_probs = mcts.get_action_probs(env, args.mcts_simulations)
-            canonical_board = np.array(env.board) # Player 1 is canonical
+            
+            # Create a canonical board representation for the network
+            canonical_board = np.array(env.board)
+            if current_player == -1:
+                canonical_board *= -1
+
+            # Store the training example
             pi = np.zeros(args.board_size**2)
             for action, prob in action_probs.items():
                 pi[action[0] * args.board_size + action[1]] = prob
             
-            train_examples.append([canonical_board, 1, pi])
+            train_examples.append([canonical_board, current_player, pi])
+
+            # Sample an action from the MCTS policy
             action = list(action_probs.keys())[np.random.choice(len(action_probs), p=list(action_probs.values()))]
             env.move(action)
-        # Opponent's turn
         else:
-            action = opponent.select_move(env.board, env.get_action_space(), -1)
+            # Opponent's turn
+            action = opponent.select_move(env.board, env.get_action_space(), current_player)
             env.move(action)
 
     winner = env.winner
-    # Assign outcomes to the training examples for the MCTS agent (player 1)
+    # Assign outcomes to the training examples, taking into account which player the agent was
     examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
     return examples, winner
 
@@ -297,8 +309,10 @@ def run_mcts(args):
             for stage_name, num_episodes in stages:
                 opponent = opponents[stage_name]
                 print(f"\n--- Stage: Training vs {stage_name.capitalize()} Agent for {num_episodes} episodes ---")
-                for _ in trange(num_episodes, desc=f"vs {stage_name.capitalize()}"):
-                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, args)
+                for i in trange(num_episodes, desc=f"vs {stage_name.capitalize()}"):
+                    # Alternate which player the MCTS agent is
+                    mcts_player = 1 if i % 2 == 0 else -1
+                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
                     all_train_examples.extend(new_examples)
                     current_episode += 1
 
@@ -306,9 +320,11 @@ def run_mcts(args):
             if args.mixed_pool_episodes > 0:
                 print(f"\n--- Stage: Training vs Mixed Pool for {args.mixed_pool_episodes} episodes ---")
                 opponent_pool = list(opponents.values())
-                for _ in trange(args.mixed_pool_episodes, desc="vs Mixed Pool"):
+                for i in trange(args.mixed_pool_episodes, desc="vs Mixed Pool"):
+                    # Alternate player and opponent
+                    mcts_player = 1 if i % 2 == 0 else -1
                     opponent = np.random.choice(opponent_pool)
-                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, args)
+                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
                     all_train_examples.extend(new_examples)
         else:
             # --- Original Self-Play Training ---
