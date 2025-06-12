@@ -336,7 +336,7 @@ def run_mcts(args):
             log_df = pd.DataFrame(training_log)
             log_df.to_csv('mcts_training_log.csv', index=False)
             print("Detailed training log saved to mcts_training_log.csv")
-            generate_training_plots(log_df, 'MCTS', args.p1_win_rate_target)
+            generate_training_plots(log_df, 'MCTS', args.p1_win_rate_target, "mcts_training_progress.png")
 
         # Save the final trained model
         if args.model_path:
@@ -346,16 +346,6 @@ def run_mcts(args):
             save_path = f"mcts_agent_{args.network}_{args.board_size}x{args.board_size}_{timestamp}.pth"
         torch.save(agent.state_dict(), save_path)
         print(f"\nModel saved to {save_path}")
-
-        # Plot and save the training progress
-        plt.figure(figsize=(10, 5))
-        plt.plot(training_log['total_loss'])
-        plt.title(f"MCTS Training Loss ({args.network.upper()}, {args.board_size}x{args.board_size})")
-        plt.xlabel("Training Step")
-        plt.ylabel("Total Loss")
-        plt.grid(True)
-        plt.savefig("mcts_training_progress.png")
-        print("Training progress plot saved to mcts_training_progress.png")
 
 def get_agent_move(agent, board, player, device, board_size, mcts_simulations):
     temp_env = hexPosition(board_size)
