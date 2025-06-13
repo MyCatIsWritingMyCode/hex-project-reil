@@ -34,6 +34,10 @@ def main():
     parser.add_argument('--mcts-simulations', type=int, default=50, help='Number of MCTS simulations per move.')
     parser.add_argument('--mcts-epochs', type=int, default=10, help='Number of training epochs per iteration for MCTS.')
     parser.add_argument('--mcts-batch-size', type=int, default=64, help='Batch size for MCTS training.')
+    parser.add_argument('--mcts-dynamic-starts', action='store_true', help='Use dynamic starting positions for MCTS training.')
+    parser.add_argument('--opponent-type', type=str, default='RandomAgent', choices=['RandomAgent', 'GreedyAgent'], help='Opponent for staged training.')
+    parser.add_argument('--win-rate-threshold', type=float, help='Target win rate to stop training.')
+    parser.add_argument('--output-file', type=str, help='Path to save the final trained model.')
 
     # Play/Test arguments
     parser.add_argument('--human-player', type=int, default=1, choices=[1, -1], help='Choose to be player 1 (white) or -1 (black) in play mode.')

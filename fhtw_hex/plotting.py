@@ -65,6 +65,36 @@ def generate_training_plots(log_df, agent_type, p1_win_rate_target, output_filen
     plt.savefig(output_filename)
     print(f"Training analysis plot saved to {output_filename}")
 
+def generate_mcts_plots(loss_history, win_history, output_filename="mcts_training_progress.png"):
+    """
+    Generates and saves plots for MCTS training (loss and win rate).
+    """
+    fig, axs = plt.subplots(2, 1, figsize=(12, 10))
+    fig.suptitle('MCTS Training Progress', fontsize=16)
+
+    # Plot Loss
+    axs[0].plot(loss_history, label='Training Loss', color='r')
+    axs[0].set_xlabel('Training Iteration')
+    axs[0].set_ylabel('Loss')
+    axs[0].set_title('MCTS Training Loss')
+    axs[0].legend()
+    axs[0].grid(True)
+
+    # Plot Win Rate (using a rolling average to smooth it out)
+    win_rate_rolling_avg = pd.Series(win_history).rolling(window=100, min_periods=1).mean()
+    axs[1].plot(win_history, label='Win/Loss (Raw)', color='gray', alpha=0.3)
+    axs[1].plot(win_rate_rolling_avg, label='Win Rate (100-episode MA)', color='b')
+    axs[1].set_xlabel('Episode')
+    axs[1].set_ylabel('Win Rate')
+    axs[1].set_title('MCTS Win Rate vs. Opponent')
+    axs[1].axhline(y=0.5, color='r', linestyle='--', label='50% Win Rate')
+    axs[1].legend()
+    axs[1].grid(True)
+    
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(output_filename)
+    print(f"MCTS training plot saved to {output_filename}")
+
 def plot_board_state(board, filename="hex_board.png"):
     """Saves a visual representation of a Hex board state to a file."""
     size = len(board)

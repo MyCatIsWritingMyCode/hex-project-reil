@@ -141,4 +141,23 @@ class AggressiveAgent(GreedyAgent):
 class DefensiveAgent(GreedyAgent):
     """An agent that prioritizes blocking and building strong connections."""
     def __init__(self):
-        super().__init__(connection_weight=1.5, blocking_weight=1.2, distance_weight=0.2) 
+        super().__init__(connection_weight=1.5, blocking_weight=1.2, distance_weight=0.2)
+
+class RandomAgent:
+    """An agent that selects a move randomly from the available actions."""
+    def select_move(self, board: List[List[int]], action_set: List[Tuple[int, int]], player: int) -> Tuple[int, int]:
+        """
+        Selects a random valid move.
+        
+        Args:
+            board: Current game state (not used, but required by the interface).
+            action_set: List of valid moves.
+            player: Current player (not used, but required by the interface).
+            
+        Returns:
+            Tuple[int, int]: A randomly chosen move.
+        """
+        if not action_set:
+            raise ValueError("No valid moves available")
+        
+        return action_set[np.random.randint(len(action_set))] 

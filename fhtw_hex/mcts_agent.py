@@ -7,12 +7,13 @@ from tqdm import trange
 import matplotlib.pyplot as plt
 from datetime import datetime
 import math
+import os
 from copy import deepcopy
 from networks import ActorCritic, ResNet
 import pandas as pd
-from plotting import generate_training_plots
+from plotting import generate_mcts_plots
 from torch.distributions import Categorical
-from baseline_agents import GreedyAgent, AggressiveAgent, DefensiveAgent
+from baseline_agents import GreedyAgent, AggressiveAgent, DefensiveAgent, RandomAgent
 
 class Node:
     """A node in the Monte Carlo Tree Search tree."""
@@ -178,6 +179,16 @@ def execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args):
     env = hexPosition(args.board_size)
     train_examples = []
     
+    # --- Dynamic Starting Position Logic ---
+    if args.mcts_dynamic_starts and np.random.rand() < 0.5: # 50% chance for a dynamic start
+        num_random_moves = np.random.randint(1, 4) # 1 to 3 random moves
+        for _ in range(num_random_moves):
+            if env.winner == 0:
+                valid_actions = env.get_action_space()
+                action = valid_actions[np.random.randint(len(valid_actions))]
+                env.move(action)
+    # ------------------------------------
+
     while env.winner == 0:
         current_player = env.player
         if current_player == mcts_player:
@@ -209,27 +220,24 @@ def execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args):
     examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
     return examples, winner
 
+def get_opponent(opponent_type):
+    """Factory function to get an opponent agent."""
+    if opponent_type == 'GreedyAgent':
+        return GreedyAgent()
+    elif opponent_type == 'RandomAgent':
+        return RandomAgent()
+    # Add other opponent types here if needed
+    else:
+        raise ValueError(f"Unknown opponent type: {opponent_type}")
+
 def run_mcts(args):
     """The main entry point for running the MCTS agent."""
     
-    # Set device based on environment
-    device = None
-    if args.environment == 'apple':
-        if torch.backends.mps.is_available():
-            device = torch.device("mps")
-        else:
-            device = torch.device("cpu")
-    elif args.environment in ['windows', 'kaggle']:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-    
-    if device is None:
-        device = torch.device("cpu")
-        
+    # Set device
+    device = torch.device("mps" if torch.backends.mps.is_available() and args.environment == 'apple' else "cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
+    # Setup network
     action_space_size = args.board_size**2
     if args.network == 'cnn':
         agent = ActorCritic(args.board_size, action_space_size).to(device)
@@ -238,196 +246,110 @@ def run_mcts(args):
     else:
         raise ValueError(f"Unknown network type: {args.network}")
     
-    mcts = MCTS(agent, device=device)
-
-    if args.mode == 'play' or args.mode == 'test':
+    # Load an existing model if provided
+    if args.model_path and os.path.exists(args.model_path):
         try:
             agent.load_state_dict(torch.load(args.model_path, map_location=device))
-            agent.eval()
-            print(f"\nModel loaded from {args.model_path}")
+            print(f"Loaded model from {args.model_path}")
+        except (FileNotFoundError, RuntimeError) as e:
+            print(f"Could not load model from {args.model_path}. Starting from scratch. Error: {e}")
 
-            def mcts_player_func(board, _action_set):
-                temp_env = hexPosition(args.board_size)
-                temp_env.board = board
-                num_white_stones = sum(row.count(1) for row in board)
-                num_black_stones = sum(row.count(-1) for row in board)
-                temp_env.player = 1 if num_white_stones == num_black_stones else -1
-                action_probs = mcts.get_action_probs(temp_env, args.mcts_simulations, temp=0)
-                best_action = max(action_probs, key=action_probs.get)
-                return best_action
+    # Setup MCTS
+    mcts = MCTS(agent, device=device)
 
-            if args.mode == 'play':
-                 env = hexPosition(args.board_size)
-                 env.human_vs_machine(human_player=args.human_player, machine=mcts_player_func)
-            
-            if args.mode == 'test':
-                print(f"--- Running Baseline Test vs. Random Agent ---")
-                env = hexPosition(args.board_size)
-                p1_wins = 0
-                for _ in trange(args.test_episodes, desc="Agent as P1 (White)"):
-                    winner = env.machine_vs_machine_silent(machine1=mcts_player_func)
-                    if winner == 1:
-                        p1_wins += 1
-                
-                p2_wins = 0
-                for _ in trange(args.test_episodes, desc="Agent as P2 (Black)"):
-                    winner = env.machine_vs_machine_silent(machine2=mcts_player_func)
-                    if winner == -1:
-                        p2_wins += 1
-
-                print("\n--- Test Results ---")
-                print(f"Agent as Player 1 (White): {p1_wins}/{args.test_episodes} wins -> {p1_wins/args.test_episodes:.2%}")
-                print(f"Agent as Player 2 (Black): {p2_wins}/{args.test_episodes} wins -> {p2_wins/args.test_episodes:.2%}")
-                print("--------------------")
-
-        except FileNotFoundError:
-            print(f"Error: Model file not found at {args.model_path}. Please train the model first.")
-        except Exception as e:
-            print(f"An error occurred: {e}")
-
-    elif args.mode == 'train':
+    # --- Training Mode ---
+    if args.mode == 'train':
+        print("\n--- Starting MCTS Training ---")
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
-        
-        training_log = []
-        all_train_examples = []
-        
-        # --- Staged Training Setup ---
-        if args.staged_training:
-            print("\n--- Starting Staged Training ---")
-            opponents = {
-                "greedy": GreedyAgent(),
-                "aggressive": AggressiveAgent(),
-                "defensive": DefensiveAgent()
-            }
-            stages = [
-                ("greedy", args.stage1_episodes),
-                ("aggressive", args.stage2_episodes),
-                ("defensive", args.stage3_episodes),
-            ]
+        all_examples = []
+        win_history = []
+        loss_history = []
+
+        # Get the opponent for staged training
+        opponent = get_opponent(args.opponent_type)
+        print(f"Training against: {args.opponent_type}")
+
+        for i in trange(1, args.n_episodes + 1, desc="MCTS Training"):
+            # The MCTS agent plays as both Player 1 and Player 2 to learn both sides
+            mcts_player = 1 if i % 2 == 0 else -1
             
-            current_episode = 0
-            for stage_name, num_episodes in stages:
-                opponent = opponents[stage_name]
-                print(f"\n--- Stage: Training vs {stage_name.capitalize()} Agent for {num_episodes} episodes ---")
-                for i in trange(num_episodes, desc=f"vs {stage_name.capitalize()}"):
-                    # Alternate which player the MCTS agent is
-                    mcts_player = 1 if i % 2 == 0 else -1
-                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
-                    all_train_examples.extend(new_examples)
-                    current_episode += 1
-
-            # --- Final Mixed-Pool Training ---
-            if args.mixed_pool_episodes > 0:
-                print(f"\n--- Stage: Training vs Mixed Pool for {args.mixed_pool_episodes} episodes ---")
-                opponent_pool = list(opponents.values())
-                for i in trange(args.mixed_pool_episodes, desc="vs Mixed Pool"):
-                    # Alternate player and opponent
-                    mcts_player = 1 if i % 2 == 0 else -1
-                    opponent = np.random.choice(opponent_pool)
-                    new_examples, _ = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
-                    all_train_examples.extend(new_examples)
-        else:
-            # --- Original Self-Play Training ---
-            p1_wins = 0
-            print("\n--- Starting Self-Play ---")
-            for i in trange(args.n_episodes, desc="Self-Play"):
-                new_examples, winner = execute_episode(agent, mcts, args)
-                if winner == 1:
-                    p1_wins += 1
-                all_train_examples.extend(new_examples)
+            # Execute one episode of the game
+            new_examples, winner = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
+            all_examples.extend(new_examples)
             
-            p1_win_rate = p1_wins / args.n_episodes
-            print(f"\n--- Self-Play Complete: P1 Win Rate was {p1_win_rate:.2%} ---")
-            p2_oversampling_ratio = 1.0 + args.dynamic_oversampling_strength * (p1_win_rate - args.p1_win_rate_target)
-            p2_oversampling_ratio = max(0.1, p2_oversampling_ratio)
-            print(f"Target P1 Win Rate: {args.p1_win_rate_target:.2%}. Dynamic P2 Oversampling Ratio set to: {p2_oversampling_ratio:.2f}")
+            # Record win rate from the MCTS agent's perspective
+            if winner == mcts_player:
+                win_history.append(1)
+            else:
+                win_history.append(0)
 
-        # --- Training Phase ---
-        print("\n--- Starting Model Training ---")
-        agent.train()
-        
-        # In staged training, we don't do P2 oversampling as we control the opponent.
-        # We can just shuffle all examples gathered.
-        if not args.staged_training:
-            # Separate data for potential oversampling
-            p1_examples = [ex for ex in all_train_examples if ex[1] == 1]
-            p2_examples = [ex for ex in all_train_examples if ex[1] == -1]
-
-        for epoch in trange(args.mcts_epochs, desc="Epochs"):
-            if args.staged_training:
-                np.random.shuffle(all_train_examples)
-                train_batch_source = all_train_examples
-            else: # Handle oversampling for self-play
-                p2_batch_size = int(args.mcts_batch_size * (p2_oversampling_ratio / (1 + p2_oversampling_ratio)))
-                p1_batch_size = args.mcts_batch_size - p2_batch_size
-                p1_sample = [p1_examples[i] for i in np.random.randint(len(p1_examples), size=p1_batch_size)] if p1_batch_size > 0 and len(p1_examples) > 0 else []
-                p2_sample = [p2_examples[i] for i in np.random.randint(len(p2_examples), size=p2_batch_size)] if p2_batch_size > 0 and len(p2_examples) > 0 else []
-                if not p1_sample and not p2_sample: continue
-                train_batch_source = p1_sample + p2_sample
-                np.random.shuffle(train_batch_source)
-
-
-            for i in range(0, len(train_batch_source), args.mcts_batch_size):
-                batch = train_batch_source[i:i+args.mcts_batch_size]
-                if not batch: continue
+            # --- Training Loop (trains every N epochs) ---
+            if i % args.mcts_epochs == 0 and all_examples:
+                agent.train()
                 
-                boards, _, pis, vs = zip(*batch)
-                
-                boards = torch.FloatTensor(np.array(boards)).unsqueeze(1).to(device)
-                target_pis = torch.FloatTensor(np.array(pis)).to(device)
-                target_vs = torch.FloatTensor(np.array(vs)).to(device)
+                total_loss = 0
+                dataset = torch.utils.data.TensorDataset(
+                    torch.FloatTensor(np.array([e[0] for e in all_examples])),
+                    torch.FloatTensor(np.array([e[2] for e in all_examples])),
+                    torch.FloatTensor(np.array([e[3] for e in all_examples])).unsqueeze(1)
+                )
+                dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.mcts_batch_size, shuffle=True)
 
-                out_pi, out_v = agent(boards)
-                
-                # --- Calculate Entropy ---
-                entropy_dist = Categorical(probs=out_pi)
-                policy_entropy = entropy_dist.entropy().mean().item()
-
-                loss_pi = -torch.sum(target_pis * F.log_softmax(out_pi, dim=1)) / target_pis.size()[0]
-                loss_v = F.mse_loss(out_v.view(-1), target_vs)
-                
-                total_loss = loss_pi + loss_v
-
-                # --- Log metrics for this training step (once per epoch for simplicity) ---
-                if i == 0:
-                    log_entry = {
-                        'epoch': epoch,
-                        'actor_loss': loss_pi.item(),
-                        'critic_loss': loss_v.item(),
-                        'total_loss': total_loss.item(),
-                        'policy_entropy': policy_entropy
-                    }
-                    if not args.staged_training:
-                        log_entry['p1_win_rate_batch'] = p1_win_rate
-                        log_entry['p2_oversampling_ratio'] = p2_oversampling_ratio
+                for boards, pis, vs in dataloader:
+                    boards, pis, vs = boards.to(device), pis.to(device), vs.to(device)
+                    boards = boards.unsqueeze(1) # Add channel dimension
                     
-                    training_log.append(log_entry)
+                    log_probs, value = agent(boards)
+                    policy_loss = -torch.sum(pis * log_probs) / pis.size(0)
+                    value_loss = F.mse_loss(value, vs)
+                    loss = policy_loss + value_loss
+                    
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+                    
+                    total_loss += loss.item()
 
-                optimizer.zero_grad()
-                total_loss.backward()
-                optimizer.step()
+                loss_history.append(total_loss / len(dataloader))
+                all_examples = [] # Clear memory
 
-            # Save a checkpoint after each epoch if requested
-            if args.save_checkpoints:
-                save_path = f"mcts_checkpoint_epoch{epoch+1}.pth"
-                torch.save(agent.state_dict(), save_path)
-                print(f"\nSaved checkpoint to {save_path}")
+                # --- Logging and Check for Stopping Condition ---
+                if i % (args.mcts_epochs * 10) == 0:
+                    recent_wins = win_history[-100:]
+                    win_rate = sum(recent_wins) / len(recent_wins) if recent_wins else 0
+                    print(f"\nEpisode {i}: Win Rate (last 100) = {win_rate:.2f}, Avg Loss = {loss_history[-1]:.4f}")
 
-        # --- Save detailed log and generate plots ---
-        if training_log:
-            log_df = pd.DataFrame(training_log)
-            log_df.to_csv('mcts_training_log.csv', index=False)
-            print("Detailed training log saved to mcts_training_log.csv")
-            generate_training_plots(log_df, 'MCTS', args.p1_win_rate_target, "mcts_training_progress.png")
+                    if args.win_rate_threshold and win_rate >= args.win_rate_threshold:
+                        print(f"Win rate threshold of {args.win_rate_threshold:.2f} reached. Stopping training.")
+                        break
 
-        # Save the final trained model
-        if args.model_path:
-            save_path = args.model_path
-        else:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            save_path = f"mcts_agent_{args.network}_{args.board_size}x{args.board_size}_{timestamp}.pth"
-        torch.save(agent.state_dict(), save_path)
-        print(f"\nModel saved to {save_path}")
+        print("--- Training Complete ---")
+
+        if args.output_file:
+            torch.save(agent.state_dict(), args.output_file)
+            print(f"Model saved to {args.output_file}")
+        
+        generate_mcts_plots(
+            loss_history, 
+            win_history,
+            "mcts_training_progress.png"
+        )
+
+    # --- Play/Test Modes ---
+    elif args.mode in ['play', 'test']:
+        if not args.model_path or not os.path.exists(args.model_path):
+            print("Error: Must provide a valid model path for play/test mode.")
+            return
+            
+        agent.eval()
+        print(f"\nModel loaded from {args.model_path}")
+        
+        if args.mode == 'play':
+            # Implement play logic here if needed
+            print("Play mode is not fully implemented yet.")
+        elif args.mode == 'test':
+            # Implement test logic here if needed
+            print("Test mode is not fully implemented yet.")
 
 def get_agent_move(agent, board, player, device, board_size, mcts_simulations):
     temp_env = hexPosition(board_size)
@@ -460,6 +382,12 @@ if __name__ == '__main__':
     parser.add_argument('--stage2-episodes', type=int, default=20, help='Number of episodes against aggressive agent.')
     parser.add_argument('--stage3-episodes', type=int, default=20, help='Number of episodes against defensive agent.')
     parser.add_argument('--mixed-pool-episodes', type=int, default=40, help='Number of episodes against a mixed pool of agents.')
+
+    # New arguments for dynamic starting logic
+    parser.add_argument('--mcts-dynamic-starts', action='store_true', help='Enable dynamic starting logic.')
+    parser.add_argument('--win-rate-threshold', type=float, default=0.75, help='Win rate threshold for stopping training.')
+    parser.add_argument('--opponent-type', type=str, default='GreedyAgent', choices=['GreedyAgent', 'RandomAgent'], help='Type of opponent for training.')
+    parser.add_argument('--output-file', type=str, default=None, help='Path to save the final trained model.')
 
     args = parser.parse_args()
 
