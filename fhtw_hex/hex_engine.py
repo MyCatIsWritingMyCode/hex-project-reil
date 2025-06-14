@@ -308,28 +308,23 @@ class hexPosition (object):
                 self._evaluate_black(verbose=True)
     def machine_vs_machine_silent(self, machine1=None, machine2=None):
         """
-        A silent version of machine_vs_machine for fast testing.
-        Does not print board states during the game.
+        Simulates a game between two machine agents without printing to the console.
+        Returns the winner.
         """
-        #default to random player if 'machine' not given
-        if machine1 == None:
-            def machine1 (board, action_list):
-                from random import choice
-                return choice(action_list)
-        if machine2 == None:
-            def machine2 (board, action_list):
-                from random import choice
-                return choice(action_list)
-        #the match
         self.reset()
+        
         while self.winner == 0:
             possible_actions = self.get_action_space()
+            if not possible_actions:
+                break # Draw or game over
+                
             if self.player == 1:
-                chosen = machine1(self.board, possible_actions)
-                self.move(chosen)
-            else:
-                chosen = machine2(self.board, possible_actions)
-                self.move(chosen)
+                chosen = machine1(self.board, possible_actions, self.player)
+            else: # player is -1
+                chosen = machine2(self.board, possible_actions, self.player)
+            
+            self.move(chosen)
+            
         return self.winner
     def replay_history (self):
         """

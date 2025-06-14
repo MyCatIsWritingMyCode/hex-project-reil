@@ -9,15 +9,26 @@ from networks import ActorCritic, ResNet
 from a2c_agent import get_agent_move as get_a2c_move
 from mcts_agent import MCTS
 from submission.greedy_agent_adapter import create_greedy_player
+from baseline_agents import RandomAgent
 
 def load_player_func(args, player_num, device):
     """Loads a model and returns a function that takes a board and returns a move."""
     agent_type = getattr(args, f'p{player_num}_agent_type')
     
-    # Handle the greedy agent case separately
+    # Handle baseline agents first
     if agent_type == 'greedy':
         print(f"Loading Player {player_num}: Agent=GREEDY")
-        return create_greedy_player()
+        greedy_agent = create_greedy_player()
+        def greedy_wrapper(board, action_set, player):
+            return greedy_agent.select_move(board, action_set, player)
+        return greedy_wrapper
+    
+    if agent_type == 'random':
+        print(f"Loading Player {player_num}: Agent=RANDOM")
+        random_agent = RandomAgent()
+        def random_wrapper(board, action_set, player):
+            return random_agent.select_move(board, action_set, player)
+        return random_wrapper
 
     network_type = getattr(args, f'p{player_num}_network_type')
     model_path = getattr(args, f'p{player_num}_model_path')
@@ -58,18 +69,18 @@ def load_player_func(args, player_num, device):
 
     # Return a callable function that represents the player
     if agent_type == 'a2c':
-        def a2c_player_func(board, _action_set):
-            player = 1 if sum(row.count(1) for row in board) == sum(row.count(-1) for row in board) else -1
+        def a2c_player_func(board, action_set, player):
             return get_a2c_move(agent, board, player, device, args.board_size)
         return a2c_player_func
 
     elif agent_type == 'mcts':
         mcts = MCTS(agent, device=device)
-        def mcts_player_func(board, _action_set):
+        def mcts_player_func(board, action_set, player):
             temp_env = hexPosition(args.board_size)
             temp_env.board = board
-            temp_env.player = 1 if sum(row.count(1) for row in board) == sum(row.count(-1) for row in board) else -1
-            action_probs = mcts.get_action_probs(temp_env, args.mcts_simulations, temp=0)
+            temp_env.player = player
+            # Use a slightly higher number of simulations for tournament play for stronger performance
+            action_probs = mcts.get_action_probs(temp_env, args.mcts_simulations * 2, temp=0)
             return max(action_probs, key=action_probs.get)
         return mcts_player_func
     
