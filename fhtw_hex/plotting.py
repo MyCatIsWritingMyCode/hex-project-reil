@@ -124,4 +124,40 @@ def plot_board_state(board, filename="hex_board.png"):
     plt.axis('off')
     plt.savefig(filename, bbox_inches='tight')
     plt.close()
-    print(f"Board state saved to {filename}") 
+    print(f"Board state saved to {filename}")
+
+def generate_staged_training_plots(loss_history, win_history, filename="a2c_staged_training_progress.png"):
+    """
+    Generates and saves plots for loss and win rate for staged training.
+    """
+    if not loss_history or not win_history:
+        print("No data to plot.")
+        return
+
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+    fig.suptitle('A2C Staged Training Progress', fontsize=16)
+
+    # Loss Plot
+    ax1.plot(loss_history, label='Total Loss', color='tab:red')
+    ax1.set_xlabel('Training Batch')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Training Loss over Time')
+    ax1.legend()
+    ax1.grid(True)
+
+    # Win Rate Plot
+    # Calculate a moving average of the win rate
+    win_rate_ma = pd.Series(win_history).rolling(window=max(1, len(win_history)//20)).mean()
+    ax2.plot(win_history, label='Win/Loss (1/0)', alpha=0.3, color='tab:gray')
+    ax2.plot(win_rate_ma, label='Win Rate (Moving Average)', color='tab:blue')
+    ax2.set_xlabel('Episode')
+    ax2.set_ylabel('Win Rate')
+    ax2.set_title('Agent Win Rate over Time')
+    ax2.legend()
+    ax2.grid(True)
+    ax2.set_ylim(0, 1)
+
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(filename)
+    print(f"A2C staged training plot saved to {filename}")
+    plt.close() 

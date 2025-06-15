@@ -7,7 +7,7 @@ from tqdm import trange
 import matplotlib.pyplot as plt
 from networks import ActorCritic, ResNet
 import pandas as pd
-from plotting import generate_training_plots
+from plotting import generate_training_plots, generate_staged_training_plots
 from baseline_agents import RandomAgent, GreedyAgent, DefensiveAgent, AggressiveAgent
 import random
 import os
@@ -182,7 +182,7 @@ def run_a2c_staged_training(args):
                 })
 
             if len(experience_buffer) >= args.a2c_batch_size:
-                log_probs = torch.cat([exp['log_prob'] for exp in experience_buffer])
+                log_probs = torch.cat([exp['log_prob'] for exp in experience_buffer]).to(device)
                 values = torch.cat([exp['value'] for exp in experience_buffer]).squeeze()
                 returns = torch.tensor([exp['return'] for exp in experience_buffer]).to(device)
 
@@ -208,13 +208,31 @@ def run_a2c_staged_training(args):
                 if consecutive_high_win_rate >= 10:
                     print(f"Win rate threshold reached for 10 consecutive checks. Moving to next stage.")
                     break
+        
+        # --- End of Stage: Perform a final update on any remaining experience ---
+        if len(experience_buffer) > 0:
+            log_probs = torch.cat([exp['log_prob'] for exp in experience_buffer]).to(device)
+            values = torch.cat([exp['value'] for exp in experience_buffer]).squeeze()
+            returns = torch.tensor([exp['return'] for exp in experience_buffer]).to(device)
+
+            advantages = returns - values.detach()
+            actor_loss = -(log_probs * advantages).mean()
+            critic_loss = F.mse_loss(values, returns)
+
+            loss = actor_loss + critic_loss
+            all_losses.append(loss.item())
+            
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            experience_buffer = [] # Clear for next stage
     
     print("\n--- Staged Training Complete ---")
     if args.output_file:
         torch.save(agent.state_dict(), args.output_file)
         print(f"Model saved to {args.output_file}")
 
-    generate_training_plots(all_losses, all_wins, "a2c_staged_training_progress.png")
+    generate_staged_training_plots(all_losses, all_wins, "a2c_staged_training_progress.png")
     
 def run_a2c_self_play(args):
     """Original self-play training logic for A2C."""
