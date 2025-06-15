@@ -18,9 +18,9 @@ def load_player_func(args, player_num, device):
     # Handle baseline agents first
     if agent_type == 'greedy':
         print(f"Loading Player {player_num}: Agent=GREEDY")
-        greedy_agent = create_greedy_player()
+        greedy_player_func = create_greedy_player()
         def greedy_wrapper(board, action_set, player):
-            return greedy_agent.select_move(board, action_set, player)
+            return greedy_player_func(board, action_set)
         return greedy_wrapper
     
     if agent_type == 'random':

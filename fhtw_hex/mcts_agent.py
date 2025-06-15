@@ -9,7 +9,7 @@ from datetime import datetime
 import math
 import os
 from copy import deepcopy
-from networks import ActorCritic, ResNet
+from networks import ActorCritic, ResNet, MiniResNet
 import pandas as pd
 from plotting import generate_mcts_plots
 from torch.distributions import Categorical
@@ -243,6 +243,8 @@ def run_mcts(args):
         agent = ActorCritic(args.board_size, action_space_size).to(device)
     elif args.network == 'resnet':
         agent = ResNet(args.board_size, action_space_size).to(device)
+    elif args.network == 'miniresnet':
+        agent = MiniResNet(args.board_size, action_space_size).to(device)
     else:
         raise ValueError(f"Unknown network type: {args.network}")
     
@@ -369,7 +371,7 @@ if __name__ == '__main__':
     parser.add_argument('--mcts-batch-size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--test-episodes', type=int, default=50, help='Number of episodes for post-training test vs random')
     parser.add_argument('--environment', type=str, default='apple', choices=['windows', 'apple', 'kaggle'], help='The training environment to set the device')
-    parser.add_argument('--network', type=str, default='cnn', choices=['cnn', 'resnet'], help='Network type')
+    parser.add_argument('--network', type=str, default='cnn', choices=['cnn', 'resnet', 'miniresnet'], help='Network type')
     parser.add_argument('--mode', type=str, default='train', choices=['train'])
     parser.add_argument('--save-checkpoints', action='store_true', help='Save model checkpoints after each epoch')
     parser.add_argument('--p1-win-rate-target', type=float, default=0.5, help='Target P1 win rate for dynamic oversampling')

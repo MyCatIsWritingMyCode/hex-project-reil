@@ -54,6 +54,47 @@ class ResidualBlock(nn.Module):
         out += residual
         return F.relu(out)
 
+class MiniResNet(nn.Module):
+    """A much smaller ResNet for 7x7 boards - only 2 blocks, 16 channels."""
+    def __init__(self, board_size, action_space_size):
+        super(MiniResNet, self).__init__()
+        num_channels = 16  # Much smaller
+        num_res_blocks = 2  # Much fewer blocks
+        
+        self.conv_in = nn.Conv2d(1, num_channels, kernel_size=3, padding=1)
+        self.bn_in = nn.BatchNorm2d(num_channels)
+        
+        self.res_blocks = nn.ModuleList([ResidualBlock(num_channels) for _ in range(num_res_blocks)])
+        
+        # Policy head - simplified
+        self.conv_pi = nn.Conv2d(num_channels, 2, kernel_size=1)
+        self.bn_pi = nn.BatchNorm2d(2)
+        self.fc_pi = nn.Linear(2 * board_size * board_size, action_space_size)
+        
+        # Value head - much smaller
+        self.conv_v = nn.Conv2d(num_channels, 1, kernel_size=1)
+        self.bn_v = nn.BatchNorm2d(1)
+        self.fc_v1 = nn.Linear(board_size * board_size, 64)  # Much smaller: 64 instead of 256
+        self.fc_v2 = nn.Linear(64, 1)
+
+    def forward(self, x):
+        x = F.relu(self.bn_in(self.conv_in(x)))
+        for block in self.res_blocks:
+            x = block(x)
+        
+        # Policy head
+        pi = F.relu(self.bn_pi(self.conv_pi(x)))
+        pi = pi.view(pi.size(0), -1)
+        pi = F.log_softmax(self.fc_pi(pi), dim=1)  # Use log_softmax for MCTS
+        
+        # Value head
+        v = F.relu(self.bn_v(self.conv_v(x)))
+        v = v.view(v.size(0), -1)
+        v = F.relu(self.fc_v1(v))
+        v = torch.tanh(self.fc_v2(v))
+        
+        return pi, v
+
 class ResNet(nn.Module):
     """A ResNet architecture for Actor-Critic, inspired by AlphaZero."""
     def __init__(self, board_size, action_space_size, num_res_blocks=4, num_channels=64):
@@ -82,7 +123,7 @@ class ResNet(nn.Module):
         # Policy head
         pi = F.relu(self.bn_pi(self.conv_pi(x)))
         pi = pi.view(pi.size(0), -1)
-        pi = F.softmax(self.fc_pi(pi), dim=1)
+        pi = F.log_softmax(self.fc_pi(pi), dim=1)  # Use log_softmax for MCTS
         
         # Value head
         v = F.relu(self.bn_v(self.conv_v(x)))
