@@ -136,7 +136,7 @@ class GreedyAgent:
 class AggressiveAgent(GreedyAgent):
     """An agent that prioritizes moving forward across the board."""
     def __init__(self):
-        super().__init__(connection_weight=0.2, blocking_weight=0.5, distance_weight=1.5)
+        super().__init__(connection_weight=0.2, blocking_weight=0.2, distance_weight=2.0)
 
 class DefensiveAgent(GreedyAgent):
     """An agent that prioritizes blocking and building strong connections."""
