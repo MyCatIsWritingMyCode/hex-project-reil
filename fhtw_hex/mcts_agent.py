@@ -56,6 +56,9 @@ class MCTS:
             with torch.no_grad():
                 policy, value = self.agent(board_tensor)
             
+            # FIXED: Convert log probabilities to probabilities
+            policy = torch.exp(policy)  # Convert log_softmax to softmax
+            
             value = value.item()
 
             # The game might be over at this leaf node
@@ -78,13 +81,13 @@ class MCTS:
                     node.children[action] = Node(parent=node, prior_p=action_probs[action_scalar])
 
             # 3. Backpropagation
+            current_value = value
             while node is not None:
                 node.N += 1
-                # The value is from the perspective of the player AT THE NODE.
-                # Since we flip the board for the network, the value is for the current player.
-                # We need to negate the value for the parent node if the parent is the other player.
-                node.Q += value
-                value *= -1 # The parent's value is the negation of the child's
+                # FIXED: Q should accumulate values, then we average in UCT
+                node.Q += current_value
+                # Flip value for parent (opponent's perspective)
+                current_value = -current_value
                 node = node.parent
         
         return root
@@ -106,10 +109,7 @@ class MCTS:
 
     def _uct_score(self, parent, child):
         """Upper Confidence Bound for Trees formula."""
-        q_value = child.Q / (child.N + 1e-9)
-        # The value is from the perspective of the node's player. 
-        # Since we alternate players, we need to flip the sign for the parent's decision.
-        # But our Q update already handles this.
+        q_value = child.Q / max(child.N, 1)  # Average Q-value, avoid division by zero
         
         exploration_term = self.c_puct * child.P * math.sqrt(parent.N) / (1 + child.N)
         return q_value + exploration_term
@@ -168,7 +168,19 @@ def execute_episode(agent, mcts, args):
 
     # Return training examples and the winner of the game
     winner = env.winner
-    examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
+    # FIXED: Value assignment must match canonical board representation
+    # Since we always flip the board to player 1's perspective, values should be from player 1's perspective
+    examples = []
+    for board, player, policy in train_examples:
+        # The canonical board is always from player 1's perspective
+        # So the value should be +1 if player 1 wins, -1 if player -1 wins
+        if winner == 1:
+            value = 1.0  # Player 1 won
+        elif winner == -1:
+            value = -1.0  # Player -1 won
+        else:  # Draw (shouldn't happen in Hex)
+            value = 0.0
+        examples.append((board, player, policy, value))
     return examples, winner
 
 def execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args):
@@ -216,8 +228,19 @@ def execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args):
             env.move(action)
 
     winner = env.winner
-    # Assign outcomes to the training examples, taking into account which player the agent was
-    examples = [(x[0], x[1], x[2], winner * x[1]) for x in train_examples]
+    # FIXED: Value assignment must match the canonical board representation
+    # Since we always flip the board to player 1's perspective, values should be from player 1's perspective
+    examples = []
+    for board, player, policy in train_examples:
+        # The canonical board is always from player 1's perspective
+        # So the value should be +1 if player 1 wins, -1 if player -1 wins
+        if winner == 1:
+            value = 1.0  # Player 1 won
+        elif winner == -1:
+            value = -1.0  # Player -1 won
+        else:  # Draw (shouldn't happen in Hex)
+            value = 0.0
+        examples.append((board, player, policy, value))
     return examples, winner
 
 def get_opponent(opponent_type):
@@ -302,7 +325,7 @@ def run_mcts(args):
                     boards = boards.unsqueeze(1) # Add channel dimension
                     
                     log_probs, value = agent(boards)
-                    policy_loss = -torch.sum(pis * log_probs) / pis.size(0)
+                    policy_loss = -torch.sum(pis * log_probs, dim=1).mean()  # Cross-entropy loss
                     value_loss = F.mse_loss(value, vs)
                     loss = policy_loss + value_loss
                     
