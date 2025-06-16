@@ -5,6 +5,7 @@
 #Of the above only 'copy' is necessary for basic functionality
 
 from datetime import datetime
+import numpy as np
 
 class hexPosition (object):
     """
