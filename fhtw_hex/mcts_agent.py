@@ -292,7 +292,7 @@ def run_mcts(args):
         overall_win_history = []
         overall_loss_history = []
 
-        if args.staged_training:
+        if args.training_method == 'staged':
             print("\n--- Starting Staged MCTS Training ---")
             stages = [
                 {'name': 'Greedy', 'episodes': args.stage1_episodes, 'opponent': GreedyAgent()},
@@ -366,8 +366,41 @@ def run_mcts(args):
             win_rate = sum(stage_wins) / len(stage_wins) if stage_wins else 0
             print(f"Stage 'Mixed Pool' complete. Win Rate: {win_rate:.2f}")
 
+        elif args.training_method == 'self-play':
+            print("\n--- Starting MCTS Self-Play Training ---")
+            all_examples = []
+            for i in trange(1, args.n_episodes + 1, desc="MCTS Self-Play"):
+                new_examples, winner = execute_episode(agent, mcts, args)
+                all_examples.extend(new_examples)
+
+                # Track wins for player 1's perspective
+                if winner == 1: overall_win_history.append(1)
+                elif winner == -1: overall_win_history.append(0)
+                # No tie tracking needed for Hex
+
+                if i % args.mcts_epochs == 0 and all_examples:
+                    # --- Training Update ---
+                    agent.train()
+                    dataset = torch.utils.data.TensorDataset(
+                        torch.FloatTensor(np.array([e[0] for e in all_examples])),
+                        torch.FloatTensor(np.array([e[2] for e in all_examples])),
+                        torch.FloatTensor(np.array([e[3] for e in all_examples])).unsqueeze(1)
+                    )
+                    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.mcts_batch_size, shuffle=True)
+                    for boards, pis, vs in dataloader:
+                        boards, pis, vs = boards.to(device), pis.to(device), vs.to(device)
+                        boards = boards.unsqueeze(1); log_probs, value = agent(boards)
+                        loss = -torch.sum(pis * log_probs, dim=1).mean() + F.mse_loss(value, vs)
+                        optimizer.zero_grad(); loss.backward(); optimizer.step()
+                    all_examples = [] # Clear memory
+                
+                if i % (args.mcts_epochs * 10) == 0:
+                    recent_wins = overall_win_history[-100:]
+                    win_rate = sum(recent_wins) / len(recent_wins) if recent_wins else 0
+                    print(f"\nEpisode {i}: P1 Win Rate (last 100) = {win_rate:.2f}")
+
         else: # Original, non-staged training logic
-            print("\n--- Starting MCTS Training ---")
+            print("\n--- Starting MCTS Training (vs fixed opponent) ---")
             opponent = get_opponent(args.opponent_type)
             print(f"Training against: {args.opponent_type}")
             all_examples = []
@@ -451,7 +484,7 @@ if __name__ == '__main__':
     parser.add_argument('--mcts-epochs', type=int, default=5, help='Number of training epochs per iteration')
     parser.add_argument('--mcts-batch-size', type=int, default=32, help='Batch size for training')
     parser.add_argument('--test-episodes', type=int, default=50, help='Number of episodes for post-training test vs random')
-    parser.add_argument('--environment', type=str, default='apple', choices=['windows', 'apple', 'kaggle'], help='The training environment to set the device')
+    parser.add_argument('--environment', type=str, default='apple', choices=['windows', 'apple', 'linux'], help='The training environment to set the device')
     parser.add_argument('--network', type=str, default='cnn', choices=['cnn', 'resnet', 'miniresnet'], help='Network type')
     parser.add_argument('--mode', type=str, default='train', choices=['train'])
     parser.add_argument('--save-checkpoints', action='store_true', help='Save model checkpoints after each epoch')
@@ -459,17 +492,19 @@ if __name__ == '__main__':
     parser.add_argument('--dynamic-oversampling-strength', type=float, default=0.1, help='Strength of dynamic oversampling')
     parser.add_argument('--model-path', type=str, default=None, help='Path to save the final model.')
 
-    # Staged training arguments
-    parser.add_argument('--staged-training', action='store_true', help='Enable staged training against baseline agents.')
-    parser.add_argument('--stage1-episodes', type=int, default=20, help='Number of episodes against greedy agent.')
-    parser.add_argument('--stage2-episodes', type=int, default=20, help='Number of episodes against aggressive agent.')
-    parser.add_argument('--stage3-episodes', type=int, default=20, help='Number of episodes against defensive agent.')
-    parser.add_argument('--mixed-pool-episodes', type=int, default=40, help='Number of episodes against a mixed pool of agents.')
+    # Refined training method arguments
+    parser.add_argument('--training-method', type=str, default='staged', choices=['staged', 'self-play'], help='Choose the training method.')
+    
+    # Staged training arguments (only used if training-method is 'staged')
+    parser.add_argument('--stage1-episodes', type=int, default=250, help='Number of episodes against greedy agent.')
+    parser.add_argument('--stage2-episodes', type=int, default=250, help='Number of episodes against aggressive agent.')
+    parser.add_argument('--stage3-episodes', type=int, default=250, help='Number of episodes against defensive agent.')
+    parser.add_argument('--mixed-pool-episodes', type=int, default=250, help='Number of episodes against a mixed pool of agents.')
 
     # New arguments for dynamic starting logic
     parser.add_argument('--mcts-dynamic-starts', action='store_true', help='Enable dynamic starting logic.')
     parser.add_argument('--win-rate-threshold', type=float, default=0.75, help='Win rate threshold for stopping training.')
-    parser.add_argument('--opponent-type', type=str, default='GreedyAgent', choices=['GreedyAgent', 'RandomAgent'], help='Type of opponent for training.')
+    parser.add_argument('--opponent-type', type=str, default='GreedyAgent', choices=['GreedyAgent', 'RandomAgent'], help='Type of opponent for non-staged training.')
     parser.add_argument('--output-file', type=str, default=None, help='Path to save the final trained model.')
 
     args = parser.parse_args()
