@@ -12,7 +12,7 @@ from mcts_agent import MCTS
 from submission.greedy_agent_adapter import create_greedy_player
 from baseline_agents import RandomAgent, GreedyAgent, DefensiveAgent, AggressiveAgent
 
-def load_player_func(args, agent_type, network_type=None, model_path=None, device=None):
+def load_player_func(args, agent_type, network_type=None, model_path=None, device=None, player_num=1):
     """Loads a model or baseline agent and returns a callable function."""
     
     # Handle baseline agents
@@ -30,7 +30,7 @@ def load_player_func(args, agent_type, network_type=None, model_path=None, devic
         return lambda board, action_set, player: defensive_agent.select_move(board, action_set, player)
 
     # Handle neural network agents
-    print(f"Loading Player {agent_type.upper()}: Network={network_type.upper()}, Model={model_path}")
+    print(f"Loading Player {player_num} ({agent_type.upper()}): Network={network_type.upper()}, Model={model_path}")
     
     if network_type == 'cnn':
         agent = ActorCritic(args.board_size, args.board_size**2).to(device)
@@ -70,24 +70,39 @@ def run_tournament(args):
     print(f"Board Size: {args.board_size}x{args.board_size}\nDevice: {device}\n---------------------")
 
     # Load the primary player (P1)
-    p1_func = load_player_func(args, args.p1_agent_type, args.p1_network_type, args.p1_model_path, device)
+    p1_func = load_player_func(args, args.p1_agent_type, args.p1_network_type, args.p1_model_path, device, player_num=1)
     print(f"\nLoaded Player 1: {args.p1_agent_type.upper()} from {args.p1_model_path}")
     
-    opponents_to_test = ['random', 'greedy', 'aggressive', 'defensive']
+    # Determine opponents
+    if args.p2_agent_type:
+        opponents_to_test = [{'type': args.p2_agent_type, 'net': args.p2_network_type, 'path': args.p2_model_path}]
+        match_title = f"{args.p1_agent_type.upper()} ({args.p1_network_type.upper()}) vs {args.p2_agent_type.upper()} ({args.p2_network_type.upper() if args.p2_network_type else ''})"
+    else:
+        opponents_to_test = [
+            {'type': 'random', 'net': None, 'path': None},
+            {'type': 'greedy', 'net': None, 'path': None},
+            {'type': 'aggressive', 'net': None, 'path': None},
+            {'type': 'defensive', 'net': None, 'path': None}
+        ]
+        match_title = f"{args.p1_agent_type.upper()} ({args.p1_network_type.upper()}) vs Baselines"
+
     all_results = []
 
-    for opponent_agent_type in opponents_to_test:
+    for opponent in opponents_to_test:
+        opponent_agent_type = opponent['type']
         print(f"\n--- Starting Match vs {opponent_agent_type.upper()} ---")
-        p2_func = load_player_func(args, opponent_agent_type, None, None, device)
+        p2_func = load_player_func(args, opponent_agent_type, opponent['net'], opponent['path'], device, player_num=2)
 
         env = hexPosition(args.board_size)
         p1_as_white_wins = 0
-        for _ in trange(args.test_episodes // 2, desc=f"P1 as White vs {opponent_agent_type.upper()}"):
+        desc_p1_white = f"P1 ({args.p1_agent_type.upper()}) as White vs {opponent_agent_type.upper()}"
+        for _ in trange(args.test_episodes // 2, desc=desc_p1_white):
             winner = env.machine_vs_machine_silent(machine1=p1_func, machine2=p2_func)
             if winner == 1: p1_as_white_wins += 1
         
         p1_as_black_wins = 0
-        for _ in trange(args.test_episodes // 2, desc=f"P1 as Black vs {opponent_agent_type.upper()}"):
+        desc_p1_black = f"P1 ({args.p1_agent_type.upper()}) as Black vs {opponent_agent_type.upper()}"
+        for _ in trange(args.test_episodes // 2, desc=desc_p1_black):
             winner = env.machine_vs_machine_silent(machine1=p2_func, machine2=p1_func)
             if winner == -1: p1_as_black_wins += 1
 
@@ -102,19 +117,20 @@ def run_tournament(args):
         print(f"Result vs {opponent_agent_type.upper()}: {total_wins}/{args.test_episodes} ({win_rate:.2%})")
 
     # --- Save and Plot Final Results ---
+    results_filename_base = f"tournament_results_{args.p1_agent_type}_{args.p1_network_type}_vs_{args.p2_agent_type or 'baselines'}"
     results_df = pd.DataFrame(all_results)
-    results_df.to_csv('tournament_results.csv', index=False)
-    print("\nFull tournament results saved to tournament_results.csv")
+    results_df.to_csv(f'{results_filename_base}.csv', index=False)
+    print(f"\nFull tournament results saved to {results_filename_base}.csv")
     
     # Generate and save the bar chart
     plt.figure(figsize=(10, 6))
     plt.bar(results_df['opponent'], results_df['win_rate'] * 100, color=['#66b3ff', '#99ff99', '#ffcc99', '#ff9999'])
     plt.ylabel('Win Rate (%)')
-    plt.xlabel('Opponent Type')
-    plt.title(f'A2C CNN Teacher Agent Performance ({args.test_episodes} games per opponent)')
+    plt.xlabel('Opponent')
+    plt.title(f"{match_title} ({args.test_episodes} games per opponent)")
     plt.ylim(0, 100)
     for index, value in enumerate(results_df['win_rate'] * 100):
         plt.text(index, value + 1, f"{value:.1f}%", ha='center')
     
-    plt.savefig('tournament_results.png')
-    print("Tournament results plot saved to tournament_results.png") 
+    plt.savefig(f'{results_filename_base}.png')
+    print(f"Tournament results plot saved to {results_filename_base}.png") 
