@@ -249,7 +249,10 @@ def get_opponent(opponent_type):
         return GreedyAgent()
     elif opponent_type == 'RandomAgent':
         return RandomAgent()
-    # Add other opponent types here if needed
+    elif opponent_type == 'AggressiveAgent':
+        return AggressiveAgent()
+    elif opponent_type == 'DefensiveAgent':
+        return DefensiveAgent()
     else:
         raise ValueError(f"Unknown opponent type: {opponent_type}")
 
@@ -284,70 +287,125 @@ def run_mcts(args):
 
     # --- Training Mode ---
     if args.mode == 'train':
-        print("\n--- Starting MCTS Training ---")
         optimizer = torch.optim.Adam(agent.parameters(), lr=args.lr)
-        all_examples = []
-        win_history = []
-        loss_history = []
+        
+        overall_win_history = []
+        overall_loss_history = []
 
-        # Get the opponent for staged training
-        opponent = get_opponent(args.opponent_type)
-        print(f"Training against: {args.opponent_type}")
+        if args.staged_training:
+            print("\n--- Starting Staged MCTS Training ---")
+            stages = [
+                {'name': 'Greedy', 'episodes': args.stage1_episodes, 'opponent': GreedyAgent()},
+                {'name': 'Aggressive', 'episodes': args.stage2_episodes, 'opponent': AggressiveAgent()},
+                {'name': 'Defensive', 'episodes': args.stage3_episodes, 'opponent': DefensiveAgent()},
+            ]
+            baseline_pool = [GreedyAgent(), AggressiveAgent(), DefensiveAgent(), RandomAgent()]
 
-        for i in trange(1, args.n_episodes + 1, desc="MCTS Training"):
-            # The MCTS agent plays as both Player 1 and Player 2 to learn both sides
-            mcts_player = 1 if i % 2 == 0 else -1
-            
-            # Execute one episode of the game
-            new_examples, winner = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
-            all_examples.extend(new_examples)
-            
-            # Record win rate from the MCTS agent's perspective
-            if winner == mcts_player:
-                win_history.append(1)
-            else:
-                win_history.append(0)
+            for stage in stages:
+                print(f"\n--- Training Stage: {stage['name']} ({stage['episodes']} episodes) ---")
+                stage_examples = []
+                stage_wins = []
+                for i in trange(1, stage['episodes'] + 1, desc=f"Stage: {stage['name']}"):
+                    mcts_player = 1 if i % 2 == 0 else -1
+                    new_examples, winner = execute_episode_vs_opponent(agent, mcts, stage['opponent'], mcts_player, args)
+                    stage_examples.extend(new_examples)
+                    
+                    if winner == mcts_player: stage_wins.append(1)
+                    else: stage_wins.append(0)
+                    
+                    if i % args.mcts_epochs == 0 and stage_examples:
+                        # --- Training Update ---
+                        agent.train()
+                        dataset = torch.utils.data.TensorDataset(
+                            torch.FloatTensor(np.array([e[0] for e in stage_examples])),
+                            torch.FloatTensor(np.array([e[2] for e in stage_examples])),
+                            torch.FloatTensor(np.array([e[3] for e in stage_examples])).unsqueeze(1)
+                        )
+                        dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.mcts_batch_size, shuffle=True)
+                        for boards, pis, vs in dataloader:
+                            boards, pis, vs = boards.to(device), pis.to(device), vs.to(device)
+                            boards = boards.unsqueeze(1); log_probs, value = agent(boards)
+                            loss = -torch.sum(pis * log_probs, dim=1).mean() + F.mse_loss(value, vs)
+                            optimizer.zero_grad(); loss.backward(); optimizer.step()
+                        stage_examples = [] # Clear memory
 
-            # --- Training Loop (trains every N epochs) ---
-            if i % args.mcts_epochs == 0 and all_examples:
-                agent.train()
+                overall_win_history.extend(stage_wins)
+                win_rate = sum(stage_wins) / len(stage_wins) if stage_wins else 0
+                print(f"Stage '{stage['name']}' complete. Win Rate: {win_rate:.2f}")
+
+            # Final stage: Mixed Pool
+            print(f"\n--- Training Stage: Mixed Pool ({args.mixed_pool_episodes} episodes) ---")
+            stage_examples = []
+            stage_wins = []
+            for i in trange(1, args.mixed_pool_episodes + 1, desc="Stage: Mixed Pool"):
+                opponent = baseline_pool[i % len(baseline_pool)]
+                mcts_player = 1 if i % 2 == 0 else -1
+                new_examples, winner = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
+                stage_examples.extend(new_examples)
                 
-                total_loss = 0
-                dataset = torch.utils.data.TensorDataset(
-                    torch.FloatTensor(np.array([e[0] for e in all_examples])),
-                    torch.FloatTensor(np.array([e[2] for e in all_examples])),
-                    torch.FloatTensor(np.array([e[3] for e in all_examples])).unsqueeze(1)
-                )
-                dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.mcts_batch_size, shuffle=True)
+                if winner == mcts_player: stage_wins.append(1)
+                else: stage_wins.append(0)
 
-                for boards, pis, vs in dataloader:
-                    boards, pis, vs = boards.to(device), pis.to(device), vs.to(device)
-                    boards = boards.unsqueeze(1) # Add channel dimension
-                    
-                    log_probs, value = agent(boards)
-                    policy_loss = -torch.sum(pis * log_probs, dim=1).mean()  # Cross-entropy loss
-                    value_loss = F.mse_loss(value, vs)
-                    loss = policy_loss + value_loss
-                    
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-                    
-                    total_loss += loss.item()
+                if i % args.mcts_epochs == 0 and stage_examples:
+                    # --- Training Update ---
+                    agent.train()
+                    dataset = torch.utils.data.TensorDataset(
+                        torch.FloatTensor(np.array([e[0] for e in stage_examples])),
+                        torch.FloatTensor(np.array([e[2] for e in stage_examples])),
+                        torch.FloatTensor(np.array([e[3] for e in stage_examples])).unsqueeze(1)
+                    )
+                    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.mcts_batch_size, shuffle=True)
+                    for boards, pis, vs in dataloader:
+                        boards, pis, vs = boards.to(device), pis.to(device), vs.to(device)
+                        boards = boards.unsqueeze(1); log_probs, value = agent(boards)
+                        loss = -torch.sum(pis * log_probs, dim=1).mean() + F.mse_loss(value, vs)
+                        optimizer.zero_grad(); loss.backward(); optimizer.step()
+                    stage_examples = []
 
-                loss_history.append(total_loss / len(dataloader))
-                all_examples = [] # Clear memory
+            overall_win_history.extend(stage_wins)
+            win_rate = sum(stage_wins) / len(stage_wins) if stage_wins else 0
+            print(f"Stage 'Mixed Pool' complete. Win Rate: {win_rate:.2f}")
 
-                # --- Logging and Check for Stopping Condition ---
+        else: # Original, non-staged training logic
+            print("\n--- Starting MCTS Training ---")
+            opponent = get_opponent(args.opponent_type)
+            print(f"Training against: {args.opponent_type}")
+            all_examples = []
+            for i in trange(1, args.n_episodes + 1, desc="MCTS Training"):
+                mcts_player = 1 if i % 2 == 0 else -1
+                new_examples, winner = execute_episode_vs_opponent(agent, mcts, opponent, mcts_player, args)
+                all_examples.extend(new_examples)
+
+                if winner == mcts_player: overall_win_history.append(1)
+                else: overall_win_history.append(0)
+
+                if i % args.mcts_epochs == 0 and all_examples:
+                    agent.train()
+                    dataset = torch.utils.data.TensorDataset(
+                        torch.FloatTensor(np.array([e[0] for e in all_examples])),
+                        torch.FloatTensor(np.array([e[2] for e in all_examples])),
+                        torch.FloatTensor(np.array([e[3] for e in all_examples])).unsqueeze(1)
+                    )
+                    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.mcts_batch_size, shuffle=True)
+                    for boards, pis, vs in dataloader:
+                        boards, pis, vs = boards.to(device), pis.to(device), vs.to(device)
+                        boards = boards.unsqueeze(1); log_probs, value = agent(boards)
+                        loss = -torch.sum(pis * log_probs, dim=1).mean() + F.mse_loss(value, vs)
+                        optimizer.zero_grad(); loss.backward(); optimizer.step()
+                    all_examples = []
+                
                 if i % (args.mcts_epochs * 10) == 0:
-                    recent_wins = win_history[-100:]
-                    win_rate = sum(recent_wins) / len(recent_wins) if recent_wins else 0
-                    print(f"\nEpisode {i}: Win Rate (last 100) = {win_rate:.2f}, Avg Loss = {loss_history[-1]:.4f}")
+                     recent_wins = overall_win_history[-100:]
+                     win_rate = sum(recent_wins) / len(recent_wins) if recent_wins else 0
+                     if overall_loss_history: # Check if there is any loss recorded
+                        print(f"\nEpisode {i}: Win Rate (last 100) = {win_rate:.2f}, Avg Loss = {overall_loss_history[-1]:.4f}")
+                     else:
+                        print(f"\nEpisode {i}: Win Rate (last 100) = {win_rate:.2f}, Avg Loss = N/A")
 
-                    if args.win_rate_threshold and win_rate >= args.win_rate_threshold:
+                     if args.win_rate_threshold and win_rate >= args.win_rate_threshold:
                         print(f"Win rate threshold of {args.win_rate_threshold:.2f} reached. Stopping training.")
                         break
-
+        
         print("--- Training Complete ---")
 
         if args.output_file:
@@ -355,8 +413,8 @@ def run_mcts(args):
             print(f"Model saved to {args.output_file}")
         
         generate_mcts_plots(
-            loss_history, 
-            win_history,
+            overall_loss_history, 
+            overall_win_history,
             "mcts_training_progress.png"
         )
 
