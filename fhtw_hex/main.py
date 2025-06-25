@@ -58,10 +58,10 @@ if __name__ == '__main__':
     # Tournament settings
     parser.add_argument("--test-episodes", type=int, default=100, help="Number of games to play against each opponent in tournament mode.")
     parser.add_argument("--p1-agent-type", type=str, default="a2c", choices=["a2c", "mcts"], help="Type of agent for Player 1 in tournament.")
-    parser.add_argument("--p1-network-type", type=str, default="cnn", choices=["cnn", "resnet"], help="Network architecture for Player 1.")
+    parser.add_argument("--p1-network-type", type=str, default="cnn", choices=["cnn", "resnet", "miniresnet"], help="Network architecture for Player 1.")
     parser.add_argument("--p1-model-path", type=str, default="a2c_cnn_teacher.pth", help="Path to the model file for Player 1.")
     parser.add_argument("--p2-agent-type", type=str, default=None, choices=["a2c", "mcts", "random", "greedy", "aggressive", "defensive"], help="Type of agent for Player 2 in tournament.")
-    parser.add_argument("--p2-network-type", type=str, default=None, choices=["cnn", "resnet"], help="Network architecture for Player 2, if applicable.")
+    parser.add_argument("--p2-network-type", type=str, default=None, choices=["cnn", "resnet", "miniresnet"], help="Network architecture for Player 2, if applicable.")
     parser.add_argument("--p2-model-path", type=str, default=None, help="Path to the model file for Player 2, if applicable.")
 
     args = parser.parse_args()

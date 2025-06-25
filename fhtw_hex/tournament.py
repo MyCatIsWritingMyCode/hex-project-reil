@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import argparse
 
 from hex_engine import hexPosition
-from networks import ActorCritic, ResNet
+from networks import ActorCritic, ResNet, MiniResNet
 from a2c_agent import get_agent_move as get_a2c_move
 from mcts_agent import MCTS
 from submission.greedy_agent_adapter import create_greedy_player
@@ -36,6 +36,8 @@ def load_player_func(args, agent_type, network_type=None, model_path=None, devic
         agent = ActorCritic(args.board_size, args.board_size**2).to(device)
     elif network_type == 'resnet':
         agent = ResNet(args.board_size, args.board_size**2).to(device)
+    elif network_type == 'miniresnet':
+        agent = MiniResNet(args.board_size, args.board_size**2).to(device)
     else:
         raise ValueError(f"Unknown network type for {agent_type.upper()}: {network_type}")
 
