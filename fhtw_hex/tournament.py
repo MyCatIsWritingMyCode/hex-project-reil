@@ -5,15 +5,17 @@ import os
 import matplotlib.pyplot as plt
 import argparse
 
+print("DEBUG: tournament.py script started")
+
 from hex_engine import hexPosition
 from networks import ActorCritic, ResNet, MiniResNet
 from a2c_agent import get_agent_move as get_a2c_move
 from mcts_agent import MCTS
-from submission.greedy_agent_adapter import create_greedy_player
 from baseline_agents import RandomAgent, GreedyAgent, DefensiveAgent, AggressiveAgent
 
 def load_player_func(args, agent_type, network_type=None, model_path=None, device=None, player_num=1):
     """Loads a model or baseline agent and returns a callable function."""
+    print(f"DEBUG: Loading player {player_num} -> Type: {agent_type}, Network: {network_type}, Path: {model_path}")
     
     # Handle baseline agents
     if agent_type == 'greedy':
@@ -68,6 +70,7 @@ def load_player_func(args, agent_type, network_type=None, model_path=None, devic
 
 def run_tournament(args):
     """The main entry point for running a tournament between two agents."""
+    print("DEBUG: Starting Tournament...")
     device = torch.device("mps" if torch.backends.mps.is_available() and args.environment == 'apple' else "cuda" if torch.cuda.is_available() else "cpu")
     print(f"Board Size: {args.board_size}x{args.board_size}\nDevice: {device}\n---------------------")
 
@@ -111,6 +114,10 @@ def run_tournament(args):
         total_wins = p1_as_white_wins + p1_as_black_wins
         win_rate = total_wins / args.test_episodes
         
+        print(f"\n--- Match Stats vs {opponent_agent_type.upper()} ---")
+        print(f"P1 Wins as White: {p1_as_white_wins}/{args.test_episodes//2}")
+        print(f"P1 Wins as Black: {p1_as_black_wins}/{args.test_episodes//2}")
+        
         all_results.append({
             'opponent': opponent_agent_type.upper(),
             'total_wins': total_wins,
@@ -135,4 +142,26 @@ def run_tournament(args):
         plt.text(index, value + 1, f"{value:.1f}%", ha='center')
     
     plt.savefig(f'{results_filename_base}.png')
-    print(f"Tournament results plot saved to {results_filename_base}.png") 
+    print(f"Tournament results plot saved to {results_filename_base}.png")
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Run a tournament between two Hex agents.")
+    parser.add_argument("--board_size", type=int, default=7, help="Size of the hex board")
+    parser.add_argument("--test_episodes", type=int, default=100, help="Number of games to play")
+    parser.add_argument("--environment", type=str, default="default", help="Environment for device selection ('apple' for mps)")
+
+    # Player 1 arguments
+    parser.add_argument("--p1_agent_type", type=str, required=True, choices=['a2c', 'mcts', 'greedy', 'random', 'aggressive', 'defensive'], help="Type of agent for Player 1")
+    parser.add_argument("--p1_network_type", type=str, choices=['cnn', 'resnet', 'miniresnet'], help="Network type for Player 1 (if applicable)")
+    parser.add_argument("--p1_model_path", type=str, help="Path to model for Player 1 (if applicable)")
+
+    # Player 2 arguments
+    parser.add_argument("--p2_agent_type", type=str, choices=['a2c', 'mcts', 'greedy', 'random', 'aggressive', 'defensive'], help="Type of agent for Player 2 (optional, defaults to all baselines)")
+    parser.add_argument("--p2_network_type", type=str, choices=['cnn', 'resnet', 'miniresnet'], help="Network type for Player 2 (if applicable)")
+    parser.add_argument("--p2_model_path", type=str, help="Path to model for Player 2 (if applicable)")
+    
+    # MCTS specific arguments
+    parser.add_argument("--mcts_simulations", type=int, default=100, help="Number of simulations for MCTS agent")
+
+    args = parser.parse_args()
+    run_tournament(args) 
