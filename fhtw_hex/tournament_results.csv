@@ -1,5 +1,0 @@
-opponent,total_wins,win_rate
-RANDOM,90,0.9
-GREEDY,88,0.88
-AGGRESSIVE,95,0.95
-DEFENSIVE,86,0.86
